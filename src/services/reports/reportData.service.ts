@@ -6,6 +6,7 @@ import { CYCLE_LOWS, HALVINGS } from '../btc-cycle/events';
 import { getMarketSnapshot } from '../altcoin-btc/market.service';
 import { socialLabel } from '../social/social-risk';
 import { computeConfidence, type SignalMetrics } from '../altcoin-btc/signal-quality';
+import { computeAltcoinSeason } from '../altcoin-btc/altcoin-season.service';
 import { getSupplyProfitLossLatest } from '../sync/supply-profit-loss.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,6 +93,8 @@ export interface ReportSnapshot {
     regime: string;
     btc_dominance: number | null;
     breadth_pct: number | null;
+    positive_pct: number | null;
+    index: number | null;
     strongest: { symbol: string; name: string; label: string; score: number | null; confidence: string; image: string | null }[];
     weakest: { symbol: string; name: string; label: string; score: number | null; confidence: string; image: string | null }[];
     as_of: string | null;
@@ -319,7 +322,22 @@ const buildAltcoin = async (): Promise<ReportSnapshot['altcoin']> => {
   }
 
   if (breadth == null && !asOf) return null;
-  return { regime: altRegime(breadth), btc_dominance: dominance, breadth_pct: breadth, strongest, weakest, as_of: asOf };
+
+  // Richer regime + absolute-breadth from the robust Altcoin Season service.
+  let regime = altRegime(breadth);
+  let positivePct: number | null = null;
+  let index: number | null = null;
+  try {
+    const season = await computeAltcoinSeason('30d', 'premium_clean');
+    regime = season.regime_label;
+    breadth = season.outperforming_btc_percent;
+    positivePct = season.positive_return_percent;
+    index = season.altcoin_season_index;
+  } catch {
+    /* fall back to the market-snapshot breadth */
+  }
+
+  return { regime, btc_dominance: dominance, breadth_pct: breadth, positive_pct: positivePct, index, strongest, weakest, as_of: asOf };
 };
 
 interface EcoMetrics {

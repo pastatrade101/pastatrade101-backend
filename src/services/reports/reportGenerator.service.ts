@@ -324,8 +324,10 @@ const sectionContent = (key: string, s: ReportSnapshot, lang: Language, short: b
       if (!s.altcoin) return en ? 'Altcoin vs BTC data unavailable for this report.' : 'Takwimu za Altcoin dhidi ya BTC hazipatikani.';
       const a = s.altcoin;
       const strong = a.strongest.length ? a.strongest.slice(0, 3).map((c) => c.symbol).join(', ') : '';
-      if (en) return `Altcoin strength remains ${isBroad(a.regime) ? 'broad' : 'selective'} (${a.breadth_pct != null ? `${a.breadth_pct.toFixed(0)}% breadth` : 'breadth unavailable'}).${strong ? ` Leading vs BTC: ${strong}.` : ''} The broader market has ${isBroad(a.regime) ? 'confirmed' : 'not confirmed full'} altcoin rotation — confirmation is still needed. Avoid weak BTC pairs.`;
-      return `Nguvu ya altcoin bado ni ${isBroad(a.regime) ? 'pana' : 'ya kuchagua'} (${a.breadth_pct != null ? `${a.breadth_pct.toFixed(0)}% breadth` : 'breadth haipatikani'}).${strong ? ` Zinazoongoza dhidi ya BTC: ${strong}.` : ''} Bado uthibitisho unahitajika; epuka pairs dhaifu za BTC.`;
+      const posEn = a.positive_pct != null ? ` Only ${a.positive_pct}% are positive in absolute terms${a.positive_pct < 50 ? ', so part of this is BTC falling harder rather than alts rising' : ''}.` : '';
+      const posSw = a.positive_pct != null ? ` Ni ${a.positive_pct}% tu ndizo chanya kihalisia${a.positive_pct < 50 ? ', hivyo sehemu ya hili ni BTC kushuka zaidi badala ya alts kupanda' : ''}.` : '';
+      if (en) return `Altcoin strength remains ${isBroad(a.regime) ? 'broad' : 'selective'} (${a.breadth_pct != null ? `${a.breadth_pct.toFixed(0)}% beat BTC` : 'breadth unavailable'}).${posEn}${strong ? ` Leading vs BTC: ${strong}.` : ''} ${isBroad(a.regime) ? 'Rotation is confirming' : 'Full rotation is not confirmed'} — confirmation is still needed. Avoid weak BTC pairs.`;
+      return `Nguvu ya altcoin bado ni ${isBroad(a.regime) ? 'pana' : 'ya kuchagua'} (${a.breadth_pct != null ? `${a.breadth_pct.toFixed(0)}% zimeshinda BTC` : 'breadth haipatikani'}).${posSw}${strong ? ` Zinazoongoza dhidi ya BTC: ${strong}.` : ''} Bado uthibitisho unahitajika; epuka pairs dhaifu za BTC.`;
     }
 
     case 'ecosystem': {

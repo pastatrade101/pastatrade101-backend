@@ -8,6 +8,7 @@ import {
   yearlyRoiOverlay
 } from '../services/charts/compute';
 import { CHART_REGISTRY, findChart } from '../services/charts/registry';
+import { computeAltcoinSeason, computeAltcoinSeasonHistory, type Timeframe, type Universe } from '../services/altcoin-btc/altcoin-season.service';
 import { readSeries } from '../services/series/store';
 import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
@@ -56,6 +57,25 @@ const altcoinSeason = async () => {
     leaders: outperformers.slice(0, 8).map((c) => ({ symbol: c.symbol, name: c.name, return_30d: c.return_30d }))
   };
 };
+
+// GET /api/v1/charts/altcoin-season-index?timeframe=&universe=&limit=
+export const getAltcoinSeasonIndex = asyncHandler(async (req, res) => {
+  const tf = getQueryString(req.query, 'timeframe').toLowerCase();
+  const timeframe = (['7d', '30d', '60d', '90d', '180d', '1y'].includes(tf) ? tf : '30d') as Timeframe;
+  const universe = (getQueryString(req.query, 'universe') === 'all' ? 'all' : 'premium_clean') as Universe;
+  const limit = Math.min(Math.max(getQueryNumber(req.query, 'limit') ?? 50, 10), 100);
+  const data = await computeAltcoinSeason(timeframe, universe, limit);
+  return sendSuccess(res, 'Altcoin season index computed successfully.', data);
+});
+
+// GET /api/v1/charts/altcoin-season-index/history?timeframe=&universe=
+export const getAltcoinSeasonHistory = asyncHandler(async (req, res) => {
+  const tf = getQueryString(req.query, 'timeframe').toLowerCase();
+  const timeframe = (['7d', '30d', '60d', '90d', '180d', '1y'].includes(tf) ? tf : '30d') as Timeframe;
+  const universe = (getQueryString(req.query, 'universe') === 'all' ? 'all' : 'premium_clean') as Universe;
+  const series = await computeAltcoinSeasonHistory(timeframe, universe);
+  return sendSuccess(res, 'Altcoin season history computed successfully.', { timeframe, universe, series });
+});
 
 // GET /api/v1/charts/:key
 export const getChart = asyncHandler(async (req, res) => {
