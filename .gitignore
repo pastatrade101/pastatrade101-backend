@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+
+# Env — never commit real secrets; keep the example
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.log
+npm-debug.log*
