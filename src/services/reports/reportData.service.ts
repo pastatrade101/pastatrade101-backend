@@ -7,6 +7,9 @@ import { getMarketSnapshot } from '../altcoin-btc/market.service';
 import { socialLabel } from '../social/social-risk';
 import { computeConfidence, type SignalMetrics } from '../altcoin-btc/signal-quality';
 import { computeAltcoinSeason } from '../altcoin-btc/altcoin-season.service';
+import { computeExitStrategy } from '../exit-strategy/exitStrategy.service';
+import { getProfile } from '../exit-strategy/exitStrategySettings.service';
+import { buildSimExample, type SimExample } from '../exit-strategy/exitSimulator.service';
 import { getSupplyProfitLossLatest } from '../sync/supply-profit-loss.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,6 +106,20 @@ export interface ReportSnapshot {
     regime: string;
     strongest: { name: string; signal: string; score: number | null; tvl_change_7d: number | null; image: string | null }[];
     weakest: { name: string; signal: string; score: number | null; image: string | null }[];
+  } | null;
+  exit: {
+    score: number;
+    percent: number;
+    label: string;
+    action: string;
+    current_action: string;
+    current_reason: string;
+    next_threshold: { score: number; label: string } | null;
+    confidence: string;
+    social_status: 'active' | 'partial' | 'unavailable';
+    social_label: string;
+    signal_upgrade: string[];
+    sim_example: SimExample | null;
   } | null;
   watchlist: null; // per-user; not part of the global market snapshot
   sectors: null; // sector-rankings module not yet implemented
@@ -402,13 +419,34 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     }
   };
 
-  const [risk, cycle, onchain, social, altcoin, ecosystem] = await Promise.all([
+  const buildExit = async () => {
+    const r = await computeExitStrategy();
+    const profile = await getProfile();
+    return {
+      score: r.exit_risk_score,
+      percent: r.exit_risk_percent,
+      label: r.strategy_label,
+      action: r.suggested_action,
+      current_action: r.current_action.action,
+      current_reason: r.current_action.reason,
+      next_threshold: r.next_threshold ? { score: r.next_threshold.score, label: r.next_threshold.label } : null,
+      confidence: r.confidence,
+      social_status: r.social.status,
+      social_label: r.social.label,
+      signal_upgrade: r.signal_changes.upgrade.slice(0, 3),
+      // Generic $10k example only — never a user's private portfolio.
+      sim_example: buildSimExample(profile, r.exit_risk_score, r.strategy_label)
+    };
+  };
+
+  const [risk, cycle, onchain, social, altcoin, ecosystem, exit] = await Promise.all([
     guard('btc_risk', () => buildRisk(lookback)),
     guard('btc_cycle', () => buildCycle()),
     guard('onchain', () => buildOnchain(lookback)),
     guard('social', () => buildSocial(lookback)),
     guard('altcoin_btc', () => buildAltcoin()),
-    guard('ecosystem', () => buildEcosystem())
+    guard('ecosystem', () => buildEcosystem()),
+    guard('exit_strategy', () => buildExit())
   ]);
   availability.watchlist = 'unavailable'; // per-user, not part of the global snapshot
   availability.sectors = 'unavailable'; // module not implemented yet
@@ -422,6 +460,7 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     social,
     altcoin,
     ecosystem,
+    exit,
     watchlist: null,
     sectors: null,
     availability

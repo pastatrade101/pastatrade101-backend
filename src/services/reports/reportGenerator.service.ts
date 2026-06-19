@@ -87,6 +87,8 @@ const PREMIUM_SECTIONS = new Set([
   'weakest_areas',
   'confirmation_needed',
   'risk_warnings',
+  'exit_strategy',
+  'exit_simulation_example',
   'premium_takeaway'
 ]);
 
@@ -107,6 +109,8 @@ const SECTION_TITLES: Record<string, { en: string; sw: string }> = {
   risk_warnings: { en: 'Risk Warnings', sw: 'Tahadhari za Hatari' },
   premium_takeaway: { en: 'Premium Takeaway', sw: 'Hitimisho la Premium' },
   data_coverage: { en: 'Data Coverage', sw: 'Vyanzo vya Data' },
+  exit_strategy: { en: 'Exit Strategy', sw: 'Mkakati wa Kutoka' },
+  exit_simulation_example: { en: 'Exit Simulation Example', sw: 'Mfano wa Simulesheni ya Kutoka' },
   watchlist: { en: 'Watchlist', sw: 'Orodha ya Kufuatilia' },
   sectors: { en: 'Sector Rotation', sw: 'Mzunguko wa Sekta' },
   disclaimer: { en: 'Disclaimer', sw: 'Kanusho' }
@@ -401,6 +405,43 @@ const sectionContent = (key: string, s: ReportSnapshot, lang: Language, short: b
       return en
         ? `This report used active data from ${activeList}. Unavailable modules: ${missing.join(', ')} — disclosed rather than estimated.`
         : `Taarifa hii ilitumia data hai kutoka ${activeList}. Hazikupatikana: ${missing.join(', ')} — zimewekwa wazi badala ya kukisia.`;
+    }
+
+    case 'exit_strategy': {
+      if (!s.exit) return en ? 'Exit Strategy data unavailable for this report.' : 'Takwimu za mkakati wa kutoka hazipatikani.';
+      const e = s.exit;
+      const sl = e.social_label.toLowerCase();
+      if (en) {
+        const parts = [`Exit Risk is ${e.score.toFixed(2)} (${e.percent}/100), in the ${e.label} zone — confidence ${e.confidence}.`, `Current action: ${e.current_action} ${e.current_reason}`];
+        if (e.social_status === 'unavailable') parts.push('Social Risk was unavailable for this report, so Exit Risk was calculated from active categories only.');
+        else if (e.score < 0.5) parts.push(`Social Risk is ${sl} (${e.social_status} source coverage), so crowd attention is not yet adding exit pressure.`);
+        else parts.push(`Social Risk is ${sl}, showing stronger retail attention. If BTC risk and on-chain metrics rise together, the model may move closer to light profit-taking or scale-out zones.`);
+        if (e.next_threshold) parts.push(`Next threshold: ${e.next_threshold.score.toFixed(2)} — ${e.next_threshold.label}.`);
+        if (e.signal_upgrade.length) parts.push(`The signal would strengthen if: ${e.signal_upgrade.join('; ')}.`);
+        return parts.join(' ');
+      }
+      const parts = [`Alama ya Exit Risk ni ${e.score.toFixed(2)} (${e.percent}/100), kwenye eneo la ${e.label} — uhakika ${e.confidence}.`, `Hatua ya sasa: ${e.current_action}`];
+      if (e.social_status === 'unavailable') parts.push('Data ya Social Risk haikupatikana kwa taarifa hii, hivyo Exit Risk imehesabiwa kwa kategoria zilizopo tu.');
+      else if (e.score < 0.5) parts.push('Social Risk ipo chini — umati bado haujafikia hype, hivyo shinikizo la kuondoka ni dogo.');
+      else parts.push('Social Risk inapanda, ikionyesha umakini zaidi wa wawekezaji. BTC na on-chain zikipanda pamoja, modeli inaweza kuelekea profit-taking ndogo au scale-out.');
+      if (e.next_threshold) parts.push(`Kizingiti kijacho: ${e.next_threshold.score.toFixed(2)} — ${e.next_threshold.label}.`);
+      return parts.join(' ');
+    }
+
+    case 'exit_simulation_example': {
+      // Generic, non-private illustration only ($10k example) — never user data.
+      if (!s.exit?.sim_example) return en ? 'Exit simulation example unavailable for this report.' : 'Mfano wa simulesheni haupatikani.';
+      const x = s.exit.sim_example;
+      const usd = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
+      const noExit = x.exit_max_percent <= 0;
+      if (en) {
+        if (noExit) return `For a ${usd(x.portfolio)} portfolio, the current Exit Risk Score of ${s.exit.score.toFixed(2)} would not suggest major scale-out under the ${x.profile} profile. The model remains in ${x.label} mode. (Illustration only — not based on any user's portfolio.)`;
+        const range = x.exit_min_percent === x.exit_max_percent ? `${x.exit_max_percent}%` : `${x.exit_min_percent}–${x.exit_max_percent}%`;
+        return `For a ${usd(x.portfolio)} portfolio under the ${x.profile} profile, an Exit Risk Score of ${s.exit.score.toFixed(2)} (${x.label}) maps to a simulated scale-out range of ${range} — about ${usd(x.exit_min_amount)}–${usd(x.exit_max_amount)}, leaving roughly ${usd(x.remaining_min)}–${usd(x.remaining_max)} invested. This is a risk-based simulation, not an instruction to sell, and is not based on any user's portfolio.`;
+      }
+      if (noExit) return `Kwa portfolio ya ${usd(x.portfolio)}, alama ya sasa ya Exit Risk ${s.exit.score.toFixed(2)} (${x.label}) haileti shinikizo kubwa la scale-out kwenye profaili ya ${x.profile}. (Mfano tu — si portfolio ya mtumiaji yeyote.)`;
+      const range = x.exit_min_percent === x.exit_max_percent ? `${x.exit_max_percent}%` : `${x.exit_min_percent}–${x.exit_max_percent}%`;
+      return `Kwa portfolio ya ${usd(x.portfolio)} kwenye profaili ya ${x.profile}, alama ya Exit Risk ${s.exit.score.toFixed(2)} (${x.label}) inaonyesha simulesheni ya scale-out ya ${range} — takriban ${usd(x.exit_min_amount)}–${usd(x.exit_max_amount)}, ikibaki takriban ${usd(x.remaining_min)}–${usd(x.remaining_max)} imewekezwa. Ni simulesheni ya hatari, si maelekezo ya kuuza.`;
     }
 
     default:
