@@ -431,16 +431,26 @@ const sectionContent = (key: string, s: ReportSnapshot, lang: Language, short: b
     }
 
     case 'log_regression': {
-      if (!s.logreg) return en ? 'Logarithmic regression data is unavailable for this report.' : 'Takwimu za regression hazipatikani kwa taarifa hii.';
-      const g = s.logreg;
-      const where = g.distance_from_fit_percent < -2 ? 'below' : g.distance_from_fit_percent > 2 ? 'above' : 'near';
-      if (en) {
-        const riskWord = g.risk_score < 0.4 ? 'low risk' : g.risk_score < 0.6 ? 'neutral' : g.risk_score < 0.8 ? 'elevated' : 'overheated';
-        return `BTC is currently trading ${where} its long-term logarithmic regression fair-value line. Current zone: ${g.zone_label}. Distance from fair value: ${g.distance_from_fit_percent}%. This suggests BTC is ${riskWord} relative to its long-term model — a historical model, not a price prediction.`;
-      }
-      const whereSw = where === 'below' ? 'chini ya' : where === 'above' ? 'juu ya' : 'karibu na';
-      const riskSw = g.risk_score < 0.4 ? 'hatari ndogo' : g.risk_score < 0.6 ? 'wastani' : g.risk_score < 0.8 ? 'hatari iliyoinuka' : 'imechemka';
-      return `Kwa sasa BTC inafanya biashara ${whereSw} mstari wa thamani wa regression wa muda mrefu. Eneo: ${g.zone_label}. Umbali kutoka thamani: ${g.distance_from_fit_percent}%. Hii inaonyesha BTC ipo kwenye ${riskSw} ikilinganishwa na modeli yake ya muda mrefu.`;
+      const lr = s.logreg;
+      if (!lr || (!lr.btc && !lr.eth)) return en ? 'Logarithmic regression data is unavailable for this report.' : 'Takwimu za regression hazipatikani kwa taarifa hii.';
+      type Reg = NonNullable<typeof lr.btc>;
+      const line = (asset: string, g: Reg): string => {
+        const where = g.distance_from_fit_percent < -2 ? 'below' : g.distance_from_fit_percent > 2 ? 'above' : 'near';
+        if (en) {
+          const riskWord = g.risk_score < 0.4 ? 'low-risk' : g.risk_score < 0.6 ? 'neutral' : g.risk_score < 0.8 ? 'elevated-risk' : 'overheated';
+          const tail = asset === 'ETH' ? ' Because ETH has a shorter history than BTC, confirm with ETH/BTC strength and broader market structure.' : '';
+          return `${asset} is trading ${where} its long-term regression fair-value line — zone: ${g.zone_label} (${g.distance_from_fit_percent}% from fit), a ${riskWord} reading on this model.${tail}`;
+        }
+        const whereSw = where === 'below' ? 'chini ya' : where === 'above' ? 'juu ya' : 'karibu na';
+        const riskSw = g.risk_score < 0.4 ? 'hatari ndogo' : g.risk_score < 0.6 ? 'wastani' : g.risk_score < 0.8 ? 'hatari iliyoinuka' : 'imechemka';
+        const tailSw = asset === 'ETH' ? ' Kwa kuwa ETH ina historia fupi kuliko BTC, thibitisha na nguvu ya ETH/BTC na muundo wa soko.' : '';
+        return `${asset} inafanya biashara ${whereSw} mstari wa thamani wa regression — eneo: ${g.zone_label} (${g.distance_from_fit_percent}% kutoka fit), usomaji wa ${riskSw}.${tailSw}`;
+      };
+      const parts: string[] = [];
+      if (lr.btc) parts.push(line('BTC', lr.btc));
+      if (lr.eth) parts.push(line('ETH', lr.eth));
+      parts.push(en ? 'This is a historical long-term model, not a price prediction.' : 'Hii ni modeli ya kihistoria ya muda mrefu, si utabiri wa bei.');
+      return parts.join(' ');
     }
 
     case 'exit_simulation_example': {
