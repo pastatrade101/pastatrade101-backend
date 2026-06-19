@@ -23,6 +23,7 @@ import marketRoutes from './routes/market.routes';
 import onchainRoutes from './routes/onchain.routes';
 import riskRoutes from './routes/risk.routes';
 import socialMetricsRoutes from './routes/social-metrics.routes';
+import statsRoutes from './routes/stats.routes';
 import watchlistRoutes from './routes/watchlist.routes';
 import { sendSuccess } from './utils/api-response';
 
@@ -82,6 +83,7 @@ app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/social-metrics', socialMetricsRoutes);
 app.use('/api/v1/watchlists', watchlistRoutes);
 app.use('/api/v1/plans', plansRoutes);
+app.use('/api/v1/stats', statsRoutes);
 app.use('/api/v1/me', membershipRoutes);
 app.use('/api/v1/payments', paymentsRoutes);
 app.use('/api/v1/admin', adminRoutes);
