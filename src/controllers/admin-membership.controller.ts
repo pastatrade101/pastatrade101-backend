@@ -4,6 +4,7 @@ import { AppError, sendSuccess } from '../utils/api-response';
 import { attachFeatures } from './plans.controller';
 import { getUsage } from '../services/membership/usage.service';
 import { assignPlan, cancelSubscription, extendSubscription, setStatus } from '../services/membership/subscription.service';
+import { auditLog, listAuditForUser } from '../services/membership/audit.service';
 
 // ── Admin: Plans ─────────────────────────────────────────────────────────────
 
@@ -75,49 +76,240 @@ export const adminUpdateFeature = asyncHandler(async (req, res) => {
 
 // ── Admin: Users ─────────────────────────────────────────────────────────────
 
-// GET /api/v1/admin/users?q=
+// Plan slug → numeric limits (max_watchlist_items / max_alerts), for usage X/Y.
+const loadPlanLimits = async (): Promise<Map<string, { wl: number | null; al: number | null }>> => {
+  const { data } = await supabase.from('plan_features').select('limit_value, feature_key, plan:plans(slug)').in('feature_key', ['max_watchlist_items', 'max_alerts']);
+  const map = new Map<string, { wl: number | null; al: number | null }>();
+  for (const row of data ?? []) {
+    const slug = one<{ slug: string }>(row.plan as never)?.slug;
+    if (!slug) continue;
+    const cur = map.get(slug) ?? { wl: null, al: null };
+    if (row.feature_key === 'max_watchlist_items') cur.wl = row.limit_value as number | null;
+    else cur.al = row.limit_value as number | null;
+    map.set(slug, cur);
+  }
+  return map;
+};
+
+interface UserRow {
+  id: string;
+  plan?: unknown;
+  [k: string]: unknown;
+}
+
+// Batch-enrich a page of users with subscription period, usage, latest payment
+// and follow-up status — a handful of queries for the whole page (not per user).
+const enrichUsers = async (rows: UserRow[], planLimits: Map<string, { wl: number | null; al: number | null }>) => {
+  const ids = rows.map((r) => r.id);
+  if (!ids.length) return [];
+
+  const [subsRes, peRes, paRes, wlRes] = await Promise.all([
+    supabase.from('subscriptions').select('user_id, status, billing_interval, provider, current_period_start, current_period_end, cancel_at_period_end, created_at').in('user_id', ids).order('created_at', { ascending: false }),
+    supabase.from('payment_events').select('user_id, provider, status, event_type, created_at').in('user_id', ids).order('created_at', { ascending: false }),
+    supabase.from('payment_attempts').select('user_id, followup_status, status, created_at').in('user_id', ids).order('created_at', { ascending: false }),
+    supabase.from('watchlists').select('id, user_id').in('user_id', ids)
+  ]);
+
+  const firstByUser = <T extends { user_id: string }>(arr: T[] | null): Map<string, T> => {
+    const m = new Map<string, T>();
+    for (const x of arr ?? []) if (!m.has(x.user_id)) m.set(x.user_id, x);
+    return m;
+  };
+  const subBy = firstByUser(subsRes.data as { user_id: string; [k: string]: unknown }[] | null);
+  const peBy = firstByUser(peRes.data as { user_id: string; [k: string]: unknown }[] | null);
+  const paBy = firstByUser(paRes.data as { user_id: string; [k: string]: unknown }[] | null);
+
+  // Usage (watchlist items + alerts) per user.
+  const wls = (wlRes.data ?? []) as { id: string; user_id: string }[];
+  const listToUser = new Map(wls.map((w) => [w.id, w.user_id]));
+  const itemCount = new Map<string, number>();
+  const alertCount = new Map<string, number>();
+  const itemToUser = new Map<string, string>();
+  const allListIds = wls.map((w) => w.id);
+  if (allListIds.length) {
+    const { data: items } = await supabase.from('watchlist_items').select('id, watchlist_id').in('watchlist_id', allListIds);
+    const allItemIds: string[] = [];
+    for (const it of (items ?? []) as { id: string; watchlist_id: string }[]) {
+      const u = listToUser.get(it.watchlist_id);
+      if (!u) continue;
+      itemToUser.set(it.id, u);
+      itemCount.set(u, (itemCount.get(u) ?? 0) + 1);
+      allItemIds.push(it.id);
+    }
+    if (allItemIds.length) {
+      const { data: alerts } = await supabase.from('watchlist_alerts').select('watchlist_item_id').in('watchlist_item_id', allItemIds);
+      for (const a of (alerts ?? []) as { watchlist_item_id: string }[]) {
+        const u = itemToUser.get(a.watchlist_item_id);
+        if (u) alertCount.set(u, (alertCount.get(u) ?? 0) + 1);
+      }
+    }
+  }
+
+  const now = Date.now();
+  return rows.map((r) => {
+    const sub = subBy.get(r.id) as Record<string, unknown> | undefined;
+    const slug = one<{ slug: string }>(r.plan as never)?.slug ?? 'free';
+    const lim = planLimits.get(slug) ?? { wl: null, al: null };
+    const periodEnd = (sub?.current_period_end as string | null) ?? null;
+    const pe = peBy.get(r.id) as Record<string, unknown> | undefined;
+    const pa = paBy.get(r.id) as Record<string, unknown> | undefined;
+    return {
+      ...r,
+      subscription: sub
+        ? {
+            status: sub.status,
+            billing_interval: sub.billing_interval,
+            provider: sub.provider,
+            current_period_start: sub.current_period_start,
+            current_period_end: periodEnd,
+            cancel_at_period_end: sub.cancel_at_period_end,
+            days_remaining: periodEnd ? Math.ceil((Date.parse(periodEnd) - now) / 86_400_000) : null
+          }
+        : null,
+      usage: { watchlist_items: itemCount.get(r.id) ?? 0, alerts: alertCount.get(r.id) ?? 0 },
+      limits: { max_watchlist_items: lim.wl, max_alerts: lim.al },
+      latest_payment: pe ? { provider: pe.provider, status: pe.status, event_type: pe.event_type, created_at: pe.created_at } : null,
+      followup_status: (pa?.followup_status as string | null) ?? null
+    };
+  });
+};
+
+// GET /api/v1/admin/users?search=&plan=&status=&role=&joined=&page=&limit=
 export const adminListUsers = asyncHandler(async (req, res) => {
-  let query = supabase
-    .from('users')
-    .select('id, email, full_name, role, is_active, subscription_status, created_at, last_login_at, plan:plans(slug, name)')
-    .order('created_at', { ascending: false })
-    .limit(200);
-  const q = (req.query.q as string | undefined)?.trim();
-  if (q) query = query.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`);
-  const { data, error } = await query;
+  const page = Math.max(1, parseInt(String(req.query.page ?? '1'), 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '25'), 10) || 25));
+  const search = ((req.query.search ?? req.query.q) as string | undefined)?.trim();
+  const planSlug = req.query.plan as string | undefined;
+  const status = req.query.status as string | undefined;
+  const role = req.query.role as string | undefined;
+  const joined = req.query.joined as string | undefined; // today | 7d | 30d
+
+  const { data: plans } = await supabase.from('plans').select('id, slug');
+  const planIdBySlug = new Map((plans ?? []).map((p) => [p.slug as string, p.id as string]));
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const applyFilters = (q: any) => {
+    if (search) q = q.or(`email.ilike.%${search}%,full_name.ilike.%${search}%`);
+    if (planSlug && planSlug !== 'all') q = q.eq('plan_id', planIdBySlug.get(planSlug) ?? '00000000-0000-0000-0000-000000000000');
+    if (status && status !== 'all') q = q.eq('subscription_status', status);
+    if (role && role !== 'all') q = q.eq('role', role);
+    if (joined && joined !== 'all') {
+      const days = joined === 'today' ? 1 : joined === '7d' ? 7 : joined === '30d' ? 30 : 0;
+      if (days) q = q.gte('created_at', new Date(Date.now() - days * 86_400_000).toISOString());
+    }
+    return q;
+  };
+
+  const { count } = await applyFilters(supabase.from('users').select('id', { count: 'exact', head: true }));
+  const total = count ?? 0;
+
+  const { data, error } = await applyFilters(
+    supabase
+      .from('users')
+      .select('id, email, full_name, role, is_active, subscription_status, created_at, last_login_at, plan_id, plan:plans(slug, name)')
+      .order('created_at', { ascending: false })
+      .range((page - 1) * limit, (page - 1) * limit + limit - 1)
+  );
   if (error) throw new AppError('Unable to load users.', 500, [error]);
-  return sendSuccess(res, 'Users fetched successfully.', { items: data ?? [] });
+
+  const items = await enrichUsers((data ?? []) as UserRow[], await loadPlanLimits());
+  return sendSuccess(res, 'Users fetched successfully.', { items, total, page, limit, total_pages: Math.max(1, Math.ceil(total / limit)) });
 });
 
-// GET /api/v1/admin/users/:id
+// GET /api/v1/admin/users/metrics — summary cards.
+export const adminUserMetrics = asyncHandler(async (_req, res) => {
+  const { data: plans } = await supabase.from('plans').select('id, slug');
+  const idBySlug = new Map((plans ?? []).map((p) => [p.slug as string, p.id as string]));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const headCount = async (build: (q: any) => any): Promise<number> => {
+    const { count } = await build(supabase.from('users').select('id', { count: 'exact', head: true }));
+    return count ?? 0;
+  };
+  const planCount = async (slug: string): Promise<number> => {
+    const id = idBySlug.get(slug);
+    if (!id) return 0;
+    const { count } = await supabase.from('users').select('id', { count: 'exact', head: true }).eq('plan_id', id);
+    return count ?? 0;
+  };
+  const [total, active, free, mid, premium, expired, cancelled, suspended] = await Promise.all([
+    headCount((q) => q),
+    headCount((q) => q.eq('subscription_status', 'active')),
+    planCount('free'),
+    planCount('mid'),
+    planCount('premium'),
+    headCount((q) => q.eq('subscription_status', 'expired')),
+    headCount((q) => q.eq('subscription_status', 'cancelled')),
+    headCount((q) => q.eq('subscription_status', 'suspended'))
+  ]);
+  const { count: followupsDue } = await supabase.from('payment_attempts').select('id', { count: 'exact', head: true }).in('followup_status', ['open', 'contacted']);
+  const { count: paymentsPending } = await supabase.from('payment_events').select('id', { count: 'exact', head: true }).eq('reviewed', false);
+  return sendSuccess(res, 'User metrics fetched.', {
+    total_users: total,
+    active,
+    free,
+    mid,
+    premium,
+    expired,
+    cancelled,
+    suspended,
+    expired_cancelled: expired + cancelled,
+    followups_due: followupsDue ?? 0,
+    payments_pending: paymentsPending ?? 0
+  });
+});
+
+// GET /api/v1/admin/users/:id — full profile + subscription history, usage, payments, audit, follow-ups.
 export const adminGetUser = asyncHandler(async (req, res) => {
+  const id = req.params.id;
   const { data, error } = await supabase
     .from('users')
     .select('id, email, full_name, role, is_active, subscription_status, created_at, last_login_at, plan:plans(id, slug, name)')
-    .eq('id', req.params.id)
+    .eq('id', id)
     .maybeSingle();
   if (error) throw new AppError('Unable to load user.', 500, [error]);
   if (!data) throw new AppError('User not found.', 404);
-  const [usage, { data: subs }] = await Promise.all([
-    getUsage(req.params.id),
-    supabase.from('subscriptions').select('*').eq('user_id', req.params.id).order('created_at', { ascending: false }).limit(5)
+  const [usage, { data: subs }, { data: events }, audit, { data: attempts }] = await Promise.all([
+    getUsage(id),
+    supabase.from('subscriptions').select('*').eq('user_id', id).order('created_at', { ascending: false }).limit(5),
+    supabase.from('payment_events').select('id, provider, event_type, status, reviewed, created_at').eq('user_id', id).order('created_at', { ascending: false }).limit(10),
+    listAuditForUser(id),
+    supabase.from('payment_attempts').select('id, provider, plan_slug, amount, currency, status, followup_status, followup_note, created_at').eq('user_id', id).order('created_at', { ascending: false }).limit(10)
   ]);
-  return sendSuccess(res, 'User fetched successfully.', { ...data, usage, subscriptions: subs ?? [] });
+  return sendSuccess(res, 'User fetched successfully.', { ...data, usage, subscriptions: subs ?? [], payments: events ?? [], audit, followups: attempts ?? [] });
 });
+
+// POST /api/v1/admin/users/:id/note — internal admin note (recorded in the audit trail).
+export const adminAddUserNote = asyncHandler(async (req, res) => {
+  const note = (req.body.note as string | undefined)?.trim();
+  if (!note) throw new AppError('Note is required.', 400);
+  await auditLog(req.user!.sub, 'note', req.params.id, null, null, note);
+  return sendSuccess(res, 'Note added.');
+});
+
+// Current plan slug + subscription status, for audit before/after values.
+const userPlanState = async (id: string): Promise<{ plan: string | null; status: string | null }> => {
+  const { data } = await supabase.from('users').select('subscription_status, plan:plans(slug)').eq('id', id).maybeSingle();
+  return { plan: one<{ slug: string }>(data?.plan as never)?.slug ?? null, status: (data?.subscription_status as string | null) ?? null };
+};
 
 // PUT /api/v1/admin/users/:id/plan — manual plan assignment (local payments / direct sales).
 export const adminSetUserPlan = asyncHandler(async (req, res) => {
   const { plan_id, plan_slug, status, current_period_start, current_period_end, note, billing_interval } = req.body;
+  const before = await userPlanState(req.params.id);
   await assignPlan(req.params.id, { planId: plan_id, planSlug: plan_slug, status, current_period_start, current_period_end, note, billing_interval, provider: 'manual' });
+  await auditLog(req.user!.sub, 'plan_change', req.params.id, before, { plan: plan_slug ?? plan_id, status: status ?? null, billing_interval: billing_interval ?? null, current_period_end: current_period_end ?? null }, note);
   return sendSuccess(res, 'User plan updated successfully.');
 });
 
 // PUT /api/v1/admin/users/:id/status — subscription status &/or suspend/reactivate.
 export const adminSetUserStatus = asyncHandler(async (req, res) => {
-  const { status } = req.body as { status: string };
+  const { status, note } = req.body as { status: string; note?: string };
+  const before = await userPlanState(req.params.id);
   await setStatus(req.params.id, status);
   if (status === 'suspended') await supabase.from('users').update({ is_active: false }).eq('id', req.params.id);
   if (status === 'active') await supabase.from('users').update({ is_active: true }).eq('id', req.params.id);
+  const action = status === 'suspended' ? 'suspend' : status === 'active' && before.status === 'suspended' ? 'reactivate' : 'status_change';
+  await auditLog(req.user!.sub, action, req.params.id, { status: before.status }, { status }, note);
   return sendSuccess(res, 'User status updated successfully.');
 });
 
@@ -126,12 +318,15 @@ export const adminExtendSubscription = asyncHandler(async (req, res) => {
   const days = Number(req.body.days);
   if (!Number.isFinite(days) || days <= 0) throw new AppError('days must be a positive number.', 400);
   await extendSubscription(req.params.id, days);
+  await auditLog(req.user!.sub, 'extend', req.params.id, null, { days }, (req.body.note as string | undefined)?.trim() || null);
   return sendSuccess(res, `Subscription extended by ${days} days.`);
 });
 
 // POST /api/v1/admin/users/:id/cancel-subscription
 export const adminCancelSubscription = asyncHandler(async (req, res) => {
+  const before = await userPlanState(req.params.id);
   await cancelSubscription(req.params.id, false);
+  await auditLog(req.user!.sub, 'cancel', req.params.id, before, { plan: 'free', status: 'cancelled' }, (req.body?.note as string | undefined)?.trim() || null);
   return sendSuccess(res, 'Subscription cancelled and user downgraded to Free.');
 });
 

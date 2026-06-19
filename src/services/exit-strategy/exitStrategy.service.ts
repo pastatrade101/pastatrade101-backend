@@ -4,6 +4,7 @@ import { readSeries } from '../series/store';
 import { computeCycleRisk } from '../btc-cycle/cycle-risk';
 import { computeAltcoinSeason } from '../altcoin-btc/altcoin-season.service';
 import { readLatestSocialRisk, type SocialLatest } from '../social/social-latest.service';
+import { getLatestLogRegression } from '../log-regression/logRegression.service';
 import { getProfile, type ExitProfile, type LadderStep, type RiskZone } from './exitStrategySettings.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -167,6 +168,14 @@ export const computeExitStrategy = async (profileName?: string): Promise<ExitStr
     }
   } catch {
     /* cycle optional */
+  }
+  // Blend the long-term log-regression position (vs bubble bands) into the
+  // cycle-extension category. Graceful — only when regression data is available.
+  try {
+    const lr = await getLatestLogRegression('BTC');
+    if (lr) cycle = cycle == null ? lr.risk_score : clamp01((cycle + lr.risk_score) / 2);
+  } catch {
+    /* log-regression optional */
   }
 
   const social = socialLatest.score;

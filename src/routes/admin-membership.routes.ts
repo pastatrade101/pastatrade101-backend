@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  adminAddUserNote,
   adminArchivePlan,
   adminCancelSubscription,
   adminCreatePlan,
@@ -18,7 +19,8 @@ import {
   adminSetUserStatus,
   adminUpdateFeature,
   adminUpdatePlan,
-  adminUpsertFeature
+  adminUpsertFeature,
+  adminUserMetrics
 } from '../controllers/admin-membership.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { adminOnly } from '../middleware/role.middleware';
@@ -36,7 +38,8 @@ import {
   subscriptionIdParam,
   updateFeatureSchema,
   updatePlanSchema,
-  userIdParam
+  userIdParam,
+  userNoteSchema
 } from '../schemas/membership.schema';
 
 const router = Router();
@@ -53,13 +56,15 @@ router.delete('/plans/:id', validate({ params: planIdParam }), adminArchivePlan)
 router.post('/plans/:id/features', validate({ params: planIdParam, body: featureSchema }), adminUpsertFeature);
 router.put('/plans/:id/features/:featureId', validate({ params: planFeatureParams, body: updateFeatureSchema }), adminUpdateFeature);
 
-// Users
+// Users — /users/metrics must precede /users/:id so it isn't captured as an id.
 router.get('/users', adminListUsers);
+router.get('/users/metrics', adminUserMetrics);
 router.get('/users/:id', validate({ params: userIdParam }), adminGetUser);
 router.put('/users/:id/plan', validate({ params: userIdParam, body: setUserPlanSchema }), adminSetUserPlan);
 router.put('/users/:id/status', validate({ params: userIdParam, body: setUserStatusSchema }), adminSetUserStatus);
 router.post('/users/:id/extend-subscription', validate({ params: userIdParam, body: extendSchema }), adminExtendSubscription);
 router.post('/users/:id/cancel-subscription', validate({ params: userIdParam }), adminCancelSubscription);
+router.post('/users/:id/note', validate({ params: userIdParam, body: userNoteSchema }), adminAddUserNote);
 
 // Subscriptions visibility layer (actions reuse the /users/:id/* endpoints above).
 router.get('/subscriptions', adminListSubscriptions);

@@ -89,6 +89,7 @@ const PREMIUM_SECTIONS = new Set([
   'risk_warnings',
   'exit_strategy',
   'exit_simulation_example',
+  'log_regression',
   'premium_takeaway'
 ]);
 
@@ -111,6 +112,7 @@ const SECTION_TITLES: Record<string, { en: string; sw: string }> = {
   data_coverage: { en: 'Data Coverage', sw: 'Vyanzo vya Data' },
   exit_strategy: { en: 'Exit Strategy', sw: 'Mkakati wa Kutoka' },
   exit_simulation_example: { en: 'Exit Simulation Example', sw: 'Mfano wa Simulesheni ya Kutoka' },
+  log_regression: { en: 'Logarithmic Regression', sw: 'Regression ya Logarithmic' },
   watchlist: { en: 'Watchlist', sw: 'Orodha ya Kufuatilia' },
   sectors: { en: 'Sector Rotation', sw: 'Mzunguko wa Sekta' },
   disclaimer: { en: 'Disclaimer', sw: 'Kanusho' }
@@ -426,6 +428,19 @@ const sectionContent = (key: string, s: ReportSnapshot, lang: Language, short: b
       else parts.push('Social Risk inapanda, ikionyesha umakini zaidi wa wawekezaji. BTC na on-chain zikipanda pamoja, modeli inaweza kuelekea profit-taking ndogo au scale-out.');
       if (e.next_threshold) parts.push(`Kizingiti kijacho: ${e.next_threshold.score.toFixed(2)} — ${e.next_threshold.label}.`);
       return parts.join(' ');
+    }
+
+    case 'log_regression': {
+      if (!s.logreg) return en ? 'Logarithmic regression data is unavailable for this report.' : 'Takwimu za regression hazipatikani kwa taarifa hii.';
+      const g = s.logreg;
+      const where = g.distance_from_fit_percent < -2 ? 'below' : g.distance_from_fit_percent > 2 ? 'above' : 'near';
+      if (en) {
+        const riskWord = g.risk_score < 0.4 ? 'low risk' : g.risk_score < 0.6 ? 'neutral' : g.risk_score < 0.8 ? 'elevated' : 'overheated';
+        return `BTC is currently trading ${where} its long-term logarithmic regression fair-value line. Current zone: ${g.zone_label}. Distance from fair value: ${g.distance_from_fit_percent}%. This suggests BTC is ${riskWord} relative to its long-term model — a historical model, not a price prediction.`;
+      }
+      const whereSw = where === 'below' ? 'chini ya' : where === 'above' ? 'juu ya' : 'karibu na';
+      const riskSw = g.risk_score < 0.4 ? 'hatari ndogo' : g.risk_score < 0.6 ? 'wastani' : g.risk_score < 0.8 ? 'hatari iliyoinuka' : 'imechemka';
+      return `Kwa sasa BTC inafanya biashara ${whereSw} mstari wa thamani wa regression wa muda mrefu. Eneo: ${g.zone_label}. Umbali kutoka thamani: ${g.distance_from_fit_percent}%. Hii inaonyesha BTC ipo kwenye ${riskSw} ikilinganishwa na modeli yake ya muda mrefu.`;
     }
 
     case 'exit_simulation_example': {

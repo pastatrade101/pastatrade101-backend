@@ -10,6 +10,7 @@ import { computeAltcoinSeason } from '../altcoin-btc/altcoin-season.service';
 import { computeExitStrategy } from '../exit-strategy/exitStrategy.service';
 import { getProfile } from '../exit-strategy/exitStrategySettings.service';
 import { buildSimExample, type SimExample } from '../exit-strategy/exitSimulator.service';
+import { getLatestLogRegression } from '../log-regression/logRegression.service';
 import { getSupplyProfitLossLatest } from '../sync/supply-profit-loss.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -121,6 +122,7 @@ export interface ReportSnapshot {
     signal_upgrade: string[];
     sim_example: SimExample | null;
   } | null;
+  logreg: { price: number; fit_price: number; zone_label: string; distance_from_fit_percent: number; risk_score: number; bubble_lower_band: number; lower_band: number } | null;
   watchlist: null; // per-user; not part of the global market snapshot
   sectors: null; // sector-rankings module not yet implemented
   availability: Record<string, ModuleStatus>;
@@ -439,14 +441,21 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     };
   };
 
-  const [risk, cycle, onchain, social, altcoin, ecosystem, exit] = await Promise.all([
+  const buildLogReg = async () => {
+    const l = await getLatestLogRegression('BTC');
+    if (!l) return null;
+    return { price: l.price_usd, fit_price: l.fit_price, zone_label: l.zone_label, distance_from_fit_percent: l.distance_from_fit_percent, risk_score: l.risk_score, bubble_lower_band: l.bubble_lower_band, lower_band: l.lower_band };
+  };
+
+  const [risk, cycle, onchain, social, altcoin, ecosystem, exit, logreg] = await Promise.all([
     guard('btc_risk', () => buildRisk(lookback)),
     guard('btc_cycle', () => buildCycle()),
     guard('onchain', () => buildOnchain(lookback)),
     guard('social', () => buildSocial(lookback)),
     guard('altcoin_btc', () => buildAltcoin()),
     guard('ecosystem', () => buildEcosystem()),
-    guard('exit_strategy', () => buildExit())
+    guard('exit_strategy', () => buildExit()),
+    guard('log_regression', () => buildLogReg())
   ]);
   availability.watchlist = 'unavailable'; // per-user, not part of the global snapshot
   availability.sectors = 'unavailable'; // module not implemented yet
@@ -461,6 +470,7 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     altcoin,
     ecosystem,
     exit,
+    logreg,
     watchlist: null,
     sectors: null,
     availability

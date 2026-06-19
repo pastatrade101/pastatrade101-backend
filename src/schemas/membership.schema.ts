@@ -56,8 +56,9 @@ export const setUserPlanSchema = z
   })
   .refine((v) => v.plan_id || v.plan_slug, { message: 'plan_id or plan_slug is required.' });
 
-export const setUserStatusSchema = z.object({ status: subStatus });
-export const extendSchema = z.object({ days: z.number().int().positive() });
+export const setUserStatusSchema = z.object({ status: subStatus, note: z.string().max(500).optional() });
+export const extendSchema = z.object({ days: z.number().int().positive(), note: z.string().max(500).optional() });
+export const userNoteSchema = z.object({ note: z.string().min(1).max(1000) });
 
 export const cancelAttemptSchema = z.object({ reason: z.string().max(500).optional() });
 export const followupSchema = z
