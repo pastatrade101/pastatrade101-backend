@@ -47,9 +47,12 @@ export const getLongShort = async (symbol = 'BTCUSDT', period = '1h'): Promise<n
   return num(last?.longShortRatio);
 };
 
-/** All USDT-futures tickers (used for funding breadth). Returns [] on failure. */
-export const getAllFuturesTickers = async (): Promise<{ symbol: string; fundingRate: number | null }[]> => {
+/** All USDT-futures tickers (funding breadth + extremes). Returns [] on failure.
+ *  `volume` is 24h USDT volume, used to filter out illiquid micro-cap perps. */
+export const getAllFuturesTickers = async (): Promise<{ symbol: string; fundingRate: number | null; volume: number | null }[]> => {
   const d = await bgGet('/api/v2/mix/market/tickers?productType=USDT-FUTURES');
   if (!Array.isArray(d)) return [];
-  return d.map((t) => ({ symbol: String(t?.symbol ?? ''), fundingRate: num(t?.fundingRate) })).filter((t) => t.symbol);
+  return d
+    .map((t) => ({ symbol: String(t?.symbol ?? ''), fundingRate: num(t?.fundingRate), volume: num(t?.usdtVolume ?? t?.quoteVolume) }))
+    .filter((t) => t.symbol);
 };

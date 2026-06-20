@@ -9,6 +9,7 @@ import { syncSocialMetrics } from './sync-social-metrics';
 import { syncOnchain } from './sync-onchain';
 import { syncRisk } from './sync-risk';
 import { storeDerivativesDaily } from '../derivatives/derivatives.service';
+import { runEarlyOpportunitySync } from '../early-opportunity/earlyOpportunitySync.service';
 import { withJob } from './sync-jobs';
 
 export interface FullSyncStep {
@@ -75,6 +76,8 @@ export const runFullSync = async (triggeredBy?: string): Promise<FullSyncResult>
   steps.push(await run('onchain', 'bgeometrics', 'onchain', () => syncOnchain()));
   // Ensure the risk model is rebuilt even if the on-chain stage failed.
   steps.push(await run('risk', 'risk', 'risk', () => syncRisk()));
+  // Early Opportunity Radar — discovery scan (CoinGecko + GeckoTerminal + GoPlus).
+  steps.push(await run('early-opportunity', 'radar', 'early-opportunity', () => runEarlyOpportunitySync()));
   // price-series is the slowest step (throttled CoinGecko loop) — run it LAST so
   // the quick steps surface first. It refreshes the price series for next cycle.
   steps.push(await run('price-series', 'coingecko', 'price-series', () => syncPriceSeries()));

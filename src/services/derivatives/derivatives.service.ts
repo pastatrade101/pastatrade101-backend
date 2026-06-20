@@ -27,6 +27,16 @@ export interface DerivativesResult {
   eth_long_short: number | null;
   hot_funding_breadth: number | null;
   components: { funding_risk: number | null; long_short_risk: number | null };
+  top_funding: { symbol: string; funding: number }[]; // most crowded longs (highest funding)
+  bottom_funding: { symbol: string; funding: number }[]; // most fearful / short-paid (negative funding)
+}
+
+export interface DerivativesHistoryPoint {
+  date: string;
+  leverage_percent: number | null;
+  btc_funding_rate: number | null;
+  btc_open_interest: number | null;
+  btc_long_short: number | null;
 }
 
 // Funding (per 8h) → risk. Small positive ≈ neutral; high positive = crowded longs.
@@ -60,9 +70,22 @@ export const computeDerivatives = async (): Promise<DerivativesResult> => {
   const wsum = parts.reduce((s, p) => s + p.w, 0) || 1;
   const leverage = parts.length ? round(clamp01(parts.reduce((s, p) => s + p.w * p.v, 0) / wsum), 3) : null;
 
-  // Breadth: share of liquid futures with "hot" funding (> 0.03% / 8h).
+  // Liquid universe only — drop illiquid micro-cap perps whose funding is noise.
+  // Fall back to all-with-funding if volume is missing across the board.
+  const MIN_VOL = 20_000_000; // $20M 24h
   const withFunding = tickers.filter((t) => t.fundingRate != null);
-  const hotBreadth = withFunding.length ? Math.round((withFunding.filter((t) => (t.fundingRate as number) > 0.0003).length / withFunding.length) * 100) : null;
+  const liquid = withFunding.filter((t) => (t.volume ?? 0) >= MIN_VOL);
+  const universe = liquid.length >= 20 ? liquid : withFunding;
+
+  // Breadth: share of liquid futures with "hot" funding (> 0.03% / 8h).
+  const hotBreadth = universe.length ? Math.round((universe.filter((t) => (t.fundingRate as number) > 0.0003).length / universe.length) * 100) : null;
+
+  // Per-coin funding extremes: most crowded longs (highest +funding) and most
+  // fearful / short-paid (most negative funding). Coin symbol only (drop USDT).
+  const coin = (s: string) => s.replace(/USDT$/, '');
+  const sortedFunding = [...universe].sort((a, b) => (b.fundingRate as number) - (a.fundingRate as number));
+  const top_funding = sortedFunding.slice(0, 6).filter((t) => (t.fundingRate as number) > 0).map((t) => ({ symbol: coin(t.symbol), funding: t.fundingRate as number }));
+  const bottom_funding = sortedFunding.slice(-6).reverse().filter((t) => (t.fundingRate as number) < 0).map((t) => ({ symbol: coin(t.symbol), funding: t.fundingRate as number }));
 
   let label: string;
   if (leverage == null) label = 'Unavailable';
@@ -100,7 +123,9 @@ export const computeDerivatives = async (): Promise<DerivativesResult> => {
     btc_long_short: btcLS,
     eth_long_short: ethLS,
     hot_funding_breadth: hotBreadth,
-    components: { funding_risk: fRisk, long_short_risk: lRisk }
+    components: { funding_risk: fRisk, long_short_risk: lRisk },
+    top_funding,
+    bottom_funding
   };
 };
 
@@ -141,6 +166,27 @@ export const getLatestDerivatives = async (): Promise<{ leverage_risk: number | 
     return { leverage_risk: Number(data.leverage_risk), label: (data.label as string) ?? 'Normal' };
   } catch {
     return null;
+  }
+};
+
+/** Stored daily history for the trend chart. Oldest → newest. Best-effort. */
+export const getDerivativesHistory = async (days = 90): Promise<DerivativesHistoryPoint[]> => {
+  try {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    const { data } = await supabase
+      .from('derivatives_daily')
+      .select('date, leverage_percent, btc_funding_rate, btc_open_interest, btc_long_short')
+      .gte('date', since)
+      .order('date', { ascending: true });
+    return (data ?? []).map((r) => ({
+      date: r.date as string,
+      leverage_percent: r.leverage_percent == null ? null : Number(r.leverage_percent),
+      btc_funding_rate: r.btc_funding_rate == null ? null : Number(r.btc_funding_rate),
+      btc_open_interest: r.btc_open_interest == null ? null : Number(r.btc_open_interest),
+      btc_long_short: r.btc_long_short == null ? null : Number(r.btc_long_short)
+    }));
+  } catch {
+    return [];
   }
 };
 
