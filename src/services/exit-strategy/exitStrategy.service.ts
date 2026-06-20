@@ -5,6 +5,7 @@ import { computeCycleRisk } from '../btc-cycle/cycle-risk';
 import { computeAltcoinSeason } from '../altcoin-btc/altcoin-season.service';
 import { readLatestSocialRisk, type SocialLatest } from '../social/social-latest.service';
 import { getLatestLogRegression } from '../log-regression/logRegression.service';
+import { getDerivativesForExit } from '../derivatives/derivatives.service';
 import { getProfile, type ExitProfile, type LadderStep, type RiskZone } from './exitStrategySettings.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,6 +178,10 @@ export const computeExitStrategy = async (profileName?: string): Promise<ExitStr
   } catch {
     /* log-regression optional */
   }
+  // Derivatives / leverage — read once (also drives the confluence overlay below).
+  const deriv = await getDerivativesForExit();
+  // Nudge cycle-extension risk by current leverage (funding/positioning). Graceful.
+  if (deriv?.leverage_risk != null) cycle = cycle == null ? deriv.leverage_risk : clamp01(cycle * 0.7 + deriv.leverage_risk * 0.3);
 
   const social = socialLatest.score;
   const w = profile.weights;
@@ -196,7 +201,26 @@ export const computeExitStrategy = async (profileName?: string): Promise<ExitStr
     c.active_weight = c.available && c.score != null ? Number((c.weight / wsum).toFixed(3)) : 0;
     active_weights[c.key] = c.active_weight;
   }
-  const score = clamp01(avail.reduce((s, c) => s + c.weight * (c.score as number), 0) / wsum);
+  const baseScore = clamp01(avail.reduce((s, c) => s + c.weight * (c.score as number), 0) / wsum);
+
+  // ── Leverage confluence overlay ──
+  // Derivatives feed Exit Strategy more directly than Social Risk: when leverage
+  // is building (high funding / rising open interest / one-sided positioning)
+  // AND price or crowd risk corroborates, exit pressure increases. Bounded to
+  // +0.08 so it can sharpen — never dominate — and silent in calm markets.
+  let leverageBump = 0;
+  let leverage_note: string | null = null;
+  if (deriv?.leverage_risk != null) {
+    const levConds = [deriv.funding_high, deriv.oi_rising, deriv.ls_extreme, deriv.leverage_risk >= 0.6].filter(Boolean).length;
+    const btcRising = ge(risk.btc, 0.6);
+    const socialElevated = ge(social, 0.6);
+    if (levConds >= 2 && (btcRising || socialElevated)) {
+      leverageBump = Math.min(0.08, 0.02 * levConds + (btcRising ? 0.02 : 0) + (socialElevated ? 0.02 : 0));
+      const drivers = [deriv.funding_high && 'high funding', deriv.oi_rising && 'rising open interest', deriv.ls_extreme && 'one-sided positioning'].filter(Boolean).join(', ');
+      leverage_note = `Leverage is building (${drivers || 'elevated leverage'}) while ${btcRising ? 'BTC risk' : 'crowd attention'} is elevated — exit pressure raised by +${Math.round(leverageBump * 100)}.`;
+    }
+  }
+  const score = clamp01(baseScore + leverageBump);
   const pct = Math.round(score * 100);
 
   const zone = zoneFor(profile.risk_zones, score);
@@ -261,6 +285,7 @@ export const computeExitStrategy = async (profileName?: string): Promise<ExitStr
   if (ge(alt, 0.65) && ge(so, 0.6)) conflicts.push('Altcoin speculation and crowd attention are both elevated. This increases exit pressure.');
   if (lt(so, 0.4) && lt(btc, 0.4) && lt(oc, 0.4)) conflicts.push('The market is not crowded. Exit pressure is limited.');
   if ([btc, oc, so, alt].every((x) => ge(x, 0.6))) conflicts.push('Multiple risk categories are elevated together. Scale-out pressure is high.');
+  if (leverage_note) conflicts.push(leverage_note);
 
   // ── Confirmation needed for bigger exits ──
   const confirmation_needed: string[] = [];

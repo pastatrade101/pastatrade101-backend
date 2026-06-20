@@ -126,6 +126,14 @@ export interface ReportSnapshot {
     btc: { price: number; fit_price: number; zone_label: string; distance_from_fit_percent: number; risk_score: number; bubble_lower_band: number; lower_band: number } | null;
     eth: { price: number; fit_price: number; zone_label: string; distance_from_fit_percent: number; risk_score: number; bubble_lower_band: number; lower_band: number } | null;
   } | null;
+  derivatives: {
+    leverage_risk: number;
+    leverage_percent: number;
+    label: string;
+    funding_high: boolean;
+    funding_negative: boolean;
+    oi_rising: boolean;
+  } | null;
   watchlist: null; // per-user; not part of the global market snapshot
   sectors: null; // sector-rankings module not yet implemented
   availability: Record<string, ModuleStatus>;
@@ -460,7 +468,26 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     return { btc, eth };
   };
 
-  const [risk, cycle, onchain, social, altcoin, ecosystem, exit, logreg] = await Promise.all([
+  const buildDerivatives = async (): Promise<ReportSnapshot['derivatives']> => {
+    const { data } = await supabase
+      .from('derivatives_daily')
+      .select('leverage_risk, leverage_percent, label, btc_funding_rate, btc_open_interest')
+      .order('date', { ascending: false })
+      .limit(2);
+    if (!data || !data.length || data[0].leverage_risk == null) return null;
+    const cur = data[0];
+    const prev = data[1];
+    return {
+      leverage_risk: Number(cur.leverage_risk),
+      leverage_percent: cur.leverage_percent == null ? Math.round(Number(cur.leverage_risk) * 100) : Number(cur.leverage_percent),
+      label: (cur.label as string) ?? 'Normal',
+      funding_high: cur.btc_funding_rate != null && Number(cur.btc_funding_rate) > 0.0003,
+      funding_negative: cur.btc_funding_rate != null && Number(cur.btc_funding_rate) < 0,
+      oi_rising: cur.btc_open_interest != null && prev?.btc_open_interest != null && Number(cur.btc_open_interest) > Number(prev.btc_open_interest) * 1.03
+    };
+  };
+
+  const [risk, cycle, onchain, social, altcoin, ecosystem, exit, logreg, derivatives] = await Promise.all([
     guard('btc_risk', () => buildRisk(lookback)),
     guard('btc_cycle', () => buildCycle()),
     guard('onchain', () => buildOnchain(lookback)),
@@ -468,7 +495,8 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     guard('altcoin_btc', () => buildAltcoin()),
     guard('ecosystem', () => buildEcosystem()),
     guard('exit_strategy', () => buildExit()),
-    guard('log_regression', () => buildLogReg())
+    guard('log_regression', () => buildLogReg()),
+    guard('derivatives', () => buildDerivatives())
   ]);
   availability.watchlist = 'unavailable'; // per-user, not part of the global snapshot
   availability.sectors = 'unavailable'; // module not implemented yet
@@ -484,6 +512,7 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     ecosystem,
     exit,
     logreg,
+    derivatives,
     watchlist: null,
     sectors: null,
     availability

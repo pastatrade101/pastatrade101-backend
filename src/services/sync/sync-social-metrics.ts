@@ -6,6 +6,7 @@ import { getWikipediaViews } from '../sources/wikimedia.client';
 import { getYoutubeAttention } from '../sources/youtube.client';
 import { normalizeMinMax } from '../scoring/risk';
 import { computeSocialRisk } from '../social/social-risk';
+import { getLatestDerivatives } from '../derivatives/derivatives.service';
 
 const ADD_DAYS = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
 const TODAY = () => new Date().toISOString().slice(0, 10);
@@ -141,6 +142,9 @@ export const syncSocialMetrics = async (): Promise<number> => {
     return parts.reduce((s, p) => s + p.w * p.v, 0) / parts.reduce((s, p) => s + p.w, 0);
   };
 
+  // Current leverage euphoria (derivatives) — a snapshot, applied to today only.
+  const leverageToday = (await getLatestDerivatives())?.leverage_risk ?? null;
+
   const end = TODAY();
   const rows: Record<string, unknown>[] = [];
   let date = ADD_DAYS(end, -400);
@@ -157,7 +161,8 @@ export const syncSocialMetrics = async (): Promise<number> => {
         trends_bitcoin_price: gp,
         fear_greed: fg,
         wikipedia_risk: wRisk,
-        youtube_attention: yt
+        youtube_attention: yt,
+        leverage_euphoria: date === end ? leverageToday : null
       });
       rows.push({
         date,

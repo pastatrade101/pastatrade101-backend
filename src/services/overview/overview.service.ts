@@ -88,6 +88,14 @@ const liquiditySignal = (stablecoinCap: number | null): Signal => {
   return { key: 'stablecoin_liquidity', name: 'Stablecoin Liquidity', label: 'Liquidity base', value: `$${(stablecoinCap / 1e9).toFixed(1)}B`, meaning: 'Large stablecoin supply — liquidity sitting on the sidelines.', tone: 'good', link: '/app/charts' };
 };
 
+const derivativesSignal = (row: { leverage_risk: number | null; label: string | null } | null): Signal => {
+  if (!row || row.leverage_risk == null) return { key: 'derivatives', name: 'Leverage Risk', label: 'Unavailable', value: null, meaning: 'Run a derivatives sync to populate funding & positioning.', tone: 'na', link: '/app/derivatives' };
+  const s = Number(row.leverage_risk);
+  const tone = s < 0.4 ? 'good' : s < 0.6 ? 'neutral' : s < 0.75 ? 'warn' : 'danger';
+  const meaning = s < 0.4 ? 'Funding & positioning are calm — leverage is not stretched.' : s < 0.6 ? 'Leverage is moderate.' : s < 0.75 ? 'Leverage is building — watch for over-extension.' : 'Crowded long leverage — a more fragile backdrop.';
+  return { key: 'derivatives', name: 'Leverage Risk', label: row.label ?? '', value: `${Math.round(s * 100)}/100`, meaning, tone, link: '/app/derivatives' };
+};
+
 export interface OverviewOptions {
   universe?: Universe;
   isPaid?: boolean;
@@ -97,7 +105,7 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
   const universe: Universe = opts.universe ?? 'clean';
   const isPaid = opts.isPaid ?? true;
 
-  const [{ data: globals }, { data: riskRow }, { data: exitRows }, social, { data: logregRow }, { data: ecos }, { data: coins }, { data: report }, { data: jobs }] = await Promise.all([
+  const [{ data: globals }, { data: riskRow }, { data: exitRows }, social, { data: logregRow }, { data: ecos }, { data: coins }, { data: report }, { data: jobs }, { data: derivRow }] = await Promise.all([
     supabase.from('global_market_snapshots').select('*').order('captured_at', { ascending: false }).limit(2),
     supabase.from('risk_summary_daily').select('snapshot_date, summary_risk').order('snapshot_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('exit_strategy_daily').select('date, exit_risk_score, exit_risk_percent, strategy_label, confidence').order('date', { ascending: false }).limit(2),
@@ -106,7 +114,8 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
     supabase.from('ecosystems').select('name, signal, metrics').eq('is_active', true),
     supabase.from('coins').select('coingecko_id, symbol, name, image_url, current_price, price_change_pct_24h, market_cap_rank, total_volume').lte('market_cap_rank', 150).not('price_change_pct_24h', 'is', null).order('market_cap_rank', { ascending: true }),
     supabase.from('reports').select('title, slug, report_type, market_status, premium_takeaway, published_at').eq('status', 'published').order('published_at', { ascending: false }).limit(1).maybeSingle(),
-    supabase.from('sync_jobs').select('source, job_type, status, finished_at').order('finished_at', { ascending: false }).limit(40)
+    supabase.from('sync_jobs').select('source, job_type, status, finished_at').order('finished_at', { ascending: false }).limit(40),
+    supabase.from('derivatives_daily').select('leverage_risk, label').order('date', { ascending: false }).limit(1).maybeSingle()
   ]);
 
   const global = globals?.[0];
@@ -145,7 +154,8 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
     social_risk: socialSignal(social.score, social.label, social.status),
     exit_strategy: exitSignal(exitRow),
     ecosystem_rotation: ecosystemSignal((ecos ?? []) as EcoRow[]),
-    stablecoin_liquidity: liquiditySignal(global.stablecoin_market_cap)
+    stablecoin_liquidity: liquiditySignal(global.stablecoin_market_cap),
+    derivatives: derivativesSignal(derivRow as { leverage_risk: number | null; label: string | null } | null)
   };
 
   // ── Market posture ──
@@ -238,6 +248,7 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
     social: social.status !== 'unavailable',
     exit_strategy: !!exitRow,
     log_regression: !!logregRow,
+    derivatives: !!derivRow,
     report: !!report
   };
   const missing = Object.entries(coverage)

@@ -90,6 +90,7 @@ const PREMIUM_SECTIONS = new Set([
   'exit_strategy',
   'exit_simulation_example',
   'log_regression',
+  'derivatives',
   'premium_takeaway'
 ]);
 
@@ -113,6 +114,7 @@ const SECTION_TITLES: Record<string, { en: string; sw: string }> = {
   exit_strategy: { en: 'Exit Strategy', sw: 'Mkakati wa Kutoka' },
   exit_simulation_example: { en: 'Exit Simulation Example', sw: 'Mfano wa Simulesheni ya Kutoka' },
   log_regression: { en: 'Logarithmic Regression', sw: 'Regression ya Logarithmic' },
+  derivatives: { en: 'Derivatives / Leverage Risk', sw: 'Hatari ya Leverage' },
   watchlist: { en: 'Watchlist', sw: 'Orodha ya Kufuatilia' },
   sectors: { en: 'Sector Rotation', sw: 'Mzunguko wa Sekta' },
   disclaimer: { en: 'Disclaimer', sw: 'Kanusho' }
@@ -467,6 +469,25 @@ const sectionContent = (key: string, s: ReportSnapshot, lang: Language, short: b
       if (noExit) return `Kwa portfolio ya ${usd(x.portfolio)}, alama ya sasa ya Exit Risk ${s.exit.score.toFixed(2)} (${x.label}) haileti shinikizo kubwa la scale-out kwenye profaili ya ${x.profile}. (Mfano tu — si portfolio ya mtumiaji yeyote.)`;
       const range = x.exit_min_percent === x.exit_max_percent ? `${x.exit_max_percent}%` : `${x.exit_min_percent}–${x.exit_max_percent}%`;
       return `Kwa portfolio ya ${usd(x.portfolio)} kwenye profaili ya ${x.profile}, alama ya Exit Risk ${s.exit.score.toFixed(2)} (${x.label}) inaonyesha simulesheni ya scale-out ya ${range} — takriban ${usd(x.exit_min_amount)}–${usd(x.exit_max_amount)}, ikibaki takriban ${usd(x.remaining_min)}–${usd(x.remaining_max)} imewekezwa. Ni simulesheni ya hatari, si maelekezo ya kuuza.`;
+    }
+
+    case 'derivatives': {
+      const d = s.derivatives;
+      if (!d) return en ? 'Derivatives data is unavailable for this report.' : 'Takwimu za derivatives hazipatikani kwa taarifa hii.';
+      const lvl = d.leverage_risk;
+      if (en) {
+        if (lvl < 0.45) {
+          const fundLine = d.funding_negative ? 'Funding is slightly negative and' : 'Funding is normal and';
+          const oiLine = d.oi_rising ? 'open interest is starting to expand' : 'open interest is not expanding aggressively';
+          return `Derivatives risk remains ${d.label.toLowerCase()} (${d.leverage_percent}/100). ${fundLine} ${oiLine}, suggesting leverage conditions are calm.`;
+        }
+        if (lvl < 0.6) return `Derivatives risk is moderate (${d.leverage_percent}/100). Leverage is present but not stretched — watch closely if funding and open interest keep rising.`;
+        const oiLine = d.oi_rising ? 'rising open interest' : 'open interest';
+        return `Derivatives risk is rising (${d.label.toLowerCase()}, ${d.leverage_percent}/100). Positive funding and ${oiLine} suggest long leverage is building, which can make the market more fragile.`;
+      }
+      if (lvl < 0.45) return `Hatari ya derivatives ipo chini (${d.leverage_percent}/100). Funding ipo kawaida na open interest haipanuki kwa kasi, ikionyesha leverage ipo shwari.`;
+      if (lvl < 0.6) return `Hatari ya derivatives ipo wastani (${d.leverage_percent}/100). Leverage ipo lakini bado haijazidi — fuatilia kama funding na open interest zikiendelea kupanda.`;
+      return `Hatari ya derivatives inapanda (${d.leverage_percent}/100). Funding chanya na open interest inayopanda zinaonyesha leverage ya long inajengeka, jambo linaloweza kufanya soko liwe dhaifu zaidi.`;
     }
 
     default:

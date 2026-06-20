@@ -8,6 +8,7 @@ import { syncPriceSeries } from './sync-price-series';
 import { syncSocialMetrics } from './sync-social-metrics';
 import { syncOnchain } from './sync-onchain';
 import { syncRisk } from './sync-risk';
+import { storeDerivativesDaily } from '../derivatives/derivatives.service';
 import { withJob } from './sync-jobs';
 
 export interface FullSyncStep {
@@ -68,11 +69,15 @@ export const runFullSync = async (triggeredBy?: string): Promise<FullSyncResult>
   );
   steps.push(await run('global', 'coingecko', 'global', () => syncGlobal(btcSignals)));
   steps.push(await run('ecosystems', 'defillama', 'ecosystems', () => syncEcosystems()));
-  steps.push(await run('price-series', 'coingecko', 'price-series', () => syncPriceSeries()));
+  // Derivatives runs before social so today's leverage euphoria feeds Social Risk.
+  steps.push(await run('derivatives', 'bitget', 'derivatives', () => storeDerivativesDaily()));
   steps.push(await run('social', 'social', 'social-metrics', () => syncSocialMetrics()));
   steps.push(await run('onchain', 'bgeometrics', 'onchain', () => syncOnchain()));
   // Ensure the risk model is rebuilt even if the on-chain stage failed.
   steps.push(await run('risk', 'risk', 'risk', () => syncRisk()));
+  // price-series is the slowest step (throttled CoinGecko loop) — run it LAST so
+  // the quick steps surface first. It refreshes the price series for next cycle.
+  steps.push(await run('price-series', 'coingecko', 'price-series', () => syncPriceSeries()));
 
   const ok = steps.filter((s) => s.ok).length;
   return { steps, ok, failed: steps.length - ok };

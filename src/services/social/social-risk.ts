@@ -9,6 +9,7 @@ export interface SocialInputs {
   fear_greed: number | null; // 0–100
   wikipedia_risk: number | null; // 0–1 (combined, normalized)
   youtube_attention: number | null; // 0–1
+  leverage_euphoria?: number | null; // 0–1 (derivatives leverage risk overlay)
 }
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -48,6 +49,8 @@ export const metricMeaning = (key: string, value: number | null): string => {
   if (key.startsWith('wikipedia')) return 'Public curiosity vs recent history; spikes during high-price periods add risk.';
   if (key.startsWith('youtube'))
     return value < 40 ? 'Crypto video activity is quiet.' : value < 70 ? 'Crypto video activity is elevated but not extreme.' : 'Crypto video activity is high — possible hype.';
+  if (key.startsWith('leverage'))
+    return value < 0.4 ? 'Futures leverage is calm — little crowding.' : value < 0.6 ? 'Futures leverage is moderate.' : 'Futures leverage is elevated — crowding/euphoria building.';
   return trendsMeaning(value); // google_trends_*
 };
 
@@ -62,36 +65,48 @@ export interface SocialResult {
 }
 
 /**
- * Social Risk Score — base weights 35% Trends · 25% Fear & Greed · 20% Wikipedia
- * · 20% YouTube, reweighted proportionally over whatever is active.
+ * Social Risk Score — crowd-attention first. Base weights 30% Fear & Greed ·
+ * 25% Google Trends · 20% YouTube · 15% Wikipedia · 10% Leverage Euphoria,
+ * reweighted proportionally over whatever is active. Leverage Euphoria is a
+ * crowding overlay: it only counts when at least one attention source is present
+ * (never stands alone) and is capped at 10% so it can't dominate.
  */
 export const computeSocialRisk = (i: SocialInputs): SocialResult => {
   const tRisk = trendsRisk(i.trends_bitcoin, i.trends_bitcoin_price);
   const fgRisk = i.fear_greed == null ? null : clamp01(i.fear_greed / 100);
 
-  const components = [
-    { name: 'Google Trends', w: 0.35, v: tRisk },
-    { name: 'Fear & Greed', w: 0.25, v: fgRisk },
-    { name: 'Wikipedia', w: 0.2, v: i.wikipedia_risk },
-    { name: 'YouTube', w: 0.2, v: i.youtube_attention }
+  // Attention sources represent crowd interest (the core of Social Risk).
+  const attention = [
+    { name: 'Fear & Greed', w: 0.3, v: fgRisk },
+    { name: 'Google Trends', w: 0.25, v: tRisk },
+    { name: 'YouTube', w: 0.2, v: i.youtube_attention },
+    { name: 'Wikipedia', w: 0.15, v: i.wikipedia_risk }
   ].filter((p) => p.v != null) as { name: string; w: number; v: number }[];
+
+  // Leverage euphoria only joins when there's at least one attention source —
+  // it sharpens crowding detection but must never be the sole driver.
+  const levOn = attention.length > 0 && i.leverage_euphoria != null;
+  const components = [...attention];
+  if (levOn) components.push({ name: 'Leverage Euphoria', w: 0.1, v: i.leverage_euphoria as number });
 
   const has = {
     trends: tRisk != null,
     wikipedia: i.wikipedia_risk != null,
     fear_greed: fgRisk != null,
-    youtube: i.youtube_attention != null
+    youtube: i.youtube_attention != null,
+    leverage: levOn
   };
 
   const source_status: SourceStatus = {
-    google_trends: has.trends ? 'Active' : 'Pending official API access',
-    wikipedia: has.wikipedia ? 'Active' : 'Unavailable',
     fear_greed: has.fear_greed ? 'Active' : 'Unavailable',
-    youtube: has.youtube ? 'Active' : 'Unavailable'
+    google_trends: has.trends ? 'Active' : 'Pending official API access',
+    youtube: has.youtube ? 'Active' : 'Unavailable',
+    wikipedia: has.wikipedia ? 'Active' : 'Unavailable',
+    leverage_euphoria: levOn ? 'Active' : i.leverage_euphoria != null ? 'Idle (needs attention data)' : 'Unavailable'
   };
 
   const active = components.map((c) => c.name);
-  const missing = ['Google Trends', 'Fear & Greed', 'Wikipedia', 'YouTube'].filter((n) => !active.includes(n));
+  const missing = ['Fear & Greed', 'Google Trends', 'YouTube', 'Wikipedia'].filter((n) => !active.includes(n));
   const coverage_status =
     !components.length
       ? 'Social metrics unavailable.'
