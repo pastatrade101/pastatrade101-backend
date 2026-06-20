@@ -10,6 +10,7 @@ import { syncOnchain } from './sync-onchain';
 import { syncRisk } from './sync-risk';
 import { storeDerivativesDaily } from '../derivatives/derivatives.service';
 import { runEarlyOpportunitySync } from '../early-opportunity/earlyOpportunitySync.service';
+import { runAltBtcBottomSync } from '../alt-btc-bottom/altBtcBottomSync.service';
 import { withJob } from './sync-jobs';
 
 export interface FullSyncStep {
@@ -78,6 +79,9 @@ export const runFullSync = async (triggeredBy?: string): Promise<FullSyncResult>
   steps.push(await run('risk', 'risk', 'risk', () => syncRisk()));
   // Early Opportunity Radar — discovery scan (CoinGecko + GeckoTerminal + GoPlus).
   steps.push(await run('early-opportunity', 'radar', 'early-opportunity', () => runEarlyOpportunitySync()));
+  // Alt/BTC Bottom Radar reads the daily series (prior cycle's; price-series
+  // refreshes them below). One-day lag is negligible for 365-day relative-strength.
+  steps.push(await run('alt-btc-bottom', 'radar', 'alt-btc-bottom', () => runAltBtcBottomSync()));
   // price-series is the slowest step (throttled CoinGecko loop) — run it LAST so
   // the quick steps surface first. It refreshes the price series for next cycle.
   steps.push(await run('price-series', 'coingecko', 'price-series', () => syncPriceSeries()));
