@@ -50,6 +50,16 @@ const matchesView = (c: RadarCandidate, view: string | undefined, settings: Awai
       return c.source_type === 'trending';
     case 'trending':
       return c.quality_badges.includes('Trending');
+    case 'clean_watchlist':
+      // Stricter than clean: only higher-conviction, lower-noise candidates.
+      return (
+        passesCleanFilter(c, settings) &&
+        c.opportunity_score >= 60 &&
+        c.risk_score <= 35 &&
+        (c.confidence === 'High' || c.confidence === 'Medium') &&
+        !c.risk_flags.includes('Abnormal price spike') &&
+        !c.risk_flags.includes('Low liquidity')
+      );
     case 'clean':
     default:
       return passesCleanFilter(c, settings);
@@ -96,7 +106,7 @@ export const getRadar = async (q: RadarQuery) => {
   const clean = all.filter((c) => passesCleanFilter(c, settings));
   const networks = buildNetworkLeaderboard(clean.length ? clean : all);
   const summary = buildSummary(all, settings, narratives);
-  const takeaway = buildTakeaway(clean.length ? clean : all, networks, narratives);
+  const takeaway = buildTakeaway(all, networks, narratives, settings);
   const lastSeen = all.reduce<string | null>((m, c) => {
     const v = (c as unknown as { last_seen_at?: string }).last_seen_at ?? null;
     return v && (!m || v > m) ? v : m;

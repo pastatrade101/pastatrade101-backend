@@ -423,12 +423,16 @@ export const buildNetworkLeaderboard = (cands: RadarCandidate[]): NetworkLeader[
     .sort((a, b) => b.count - a.count || b.avg_opportunity - a.avg_opportunity);
 };
 
-export const buildNarrativeLeaderboard = (categories: { name: string; market_cap: number | null; market_cap_change_24h: number | null; top_3_coins?: string[] }[]): NarrativeLeader[] =>
+// Pretty coin id → display name ("erc-404" → "Erc 404", "pandora" → "Pandora").
+const prettyId = (id: string) => id.split(/[-_]/).map((w) => cap(w)).join(' ');
+
+export const buildNarrativeLeaderboard = (categories: { name: string; market_cap: number | null; market_cap_change_24h: number | null; top_3_coins_id?: string[] }[]): NarrativeLeader[] =>
   [...categories]
     .filter((c) => c.market_cap_change_24h != null)
     .sort((a, b) => (b.market_cap_change_24h ?? 0) - (a.market_cap_change_24h ?? 0))
     .slice(0, 8)
-    .map((c) => ({ narrative: c.name, market_cap_change_24h: c.market_cap_change_24h, market_cap: c.market_cap, top_coins: (c.top_3_coins ?? []).slice(0, 3) }));
+    // top_3_coins_id are readable coin slugs; top_3_coins (image URLs) are NOT used.
+    .map((c) => ({ narrative: c.name, market_cap_change_24h: c.market_cap_change_24h, market_cap: c.market_cap, top_coins: (c.top_3_coins_id ?? []).slice(0, 3).map(prettyId) }));
 
 export const buildSummary = (cands: RadarCandidate[], settings: RadarSettings, narratives: NarrativeLeader[]): RadarSummary => {
   const nets = buildNetworkLeaderboard(cands);
@@ -443,16 +447,56 @@ export const buildSummary = (cands: RadarCandidate[], settings: RadarSettings, n
   };
 };
 
-export const buildTakeaway = (cands: RadarCandidate[], nets: NetworkLeader[], narratives: NarrativeLeader[]): string => {
-  if (!cands.length) return 'No early-opportunity candidates passed the radar filters in this scan. Activity is quiet or data sources are unavailable.';
-  const topNets = nets.slice(0, 2).map((n) => n.network).join(' and ');
-  const highRiskShare = Math.round((cands.filter((c) => c.risk_score > 65).length / cands.length) * 100);
-  const cleanShare = Math.round((cands.filter((c) => c.opportunity_score >= 61 && c.risk_score <= 55).length / cands.length) * 100);
+const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+// Accurate, non-contradictory takeaway: top networks, high-attention count, clean
+// trend, the dominant risk theme, and a validation reminder. Never a buy call.
+export const buildTakeaway = (all: RadarCandidate[], nets: NetworkLeader[], narratives: NarrativeLeader[], settings: RadarSettings): string => {
+  if (!all.length) return 'No early-opportunity candidates passed the radar filters in this scan. Activity is quiet or data sources are unavailable.';
+  const topNets = nets.slice(0, 3).map((n) => cap(n.network)).join(', ');
+  const highAttention = all.filter((c) => c.opportunity_score >= 76).length;
+  const clean = all.filter((c) => passesCleanFilter(c, settings)).length;
+  const cleanShare = Math.round((clean / all.length) * 100);
+
+  // Dominant risk theme = most common risk flag across candidates.
+  const flagCounts = new Map<string, number>();
+  for (const c of all) for (const f of c.risk_flags) flagCounts.set(f, (flagCounts.get(f) ?? 0) + 1);
+  const topFlag = [...flagCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const riskTheme = topFlag ? topFlag.toLowerCase() : 'short history';
+
   const narr = narratives[0]?.narrative;
-  if (cleanShare >= 25) {
-    return `Several candidates show strong early traction with improving liquidity and volume${topNets ? `, concentrated on ${topNets}` : ''}${narr ? ` and around the ${narr} narrative` : ''}. These remain research candidates only — confirm liquidity and transaction quality before acting.`;
-  }
-  return `Early market activity${topNets ? ` is concentrated on ${topNets}` : ' is mixed'} today. ${highRiskShare}% of candidates carry high risk (short history / low liquidity). Focus on candidates with improving liquidity, real volume and cleaner transaction activity — most signals still need validation.`;
+  const attentionLine = highAttention > 0 ? `${highAttention} candidate${highAttention === 1 ? '' : 's'} show high early attention` : 'No candidate is showing extreme attention yet';
+  const validationLine = cleanShare >= 40 ? `clean candidates are a healthy share (${cleanShare}%)` : `most candidates still need validation (${cleanShare}% pass the clean filter)`;
+  return `Early activity is concentrated on ${topNets || 'multiple networks'} today${narr ? `, with the ${narr} narrative leading` : ''}. ${attentionLine}, but ${validationLine} — the main caveat right now is ${riskTheme}. These are research candidates, not buy signals.`;
+};
+
+// ── Report summary (prepared for the Report Generator; not wired into reports yet) ──
+export interface RadarReportSummary {
+  top_networks: string[];
+  top_narratives: string[];
+  high_attention: number;
+  clean_candidates: number;
+  main_risk: string | null;
+  text_en: string;
+  text_sw: string;
+}
+
+export const buildRadarReportSummary = (all: RadarCandidate[], nets: NetworkLeader[], narratives: NarrativeLeader[], settings: RadarSettings): RadarReportSummary => {
+  const top_networks = nets.slice(0, 2).map((n) => cap(n.network));
+  const top_narratives = narratives.slice(0, 2).map((n) => n.narrative);
+  const high_attention = all.filter((c) => c.opportunity_score >= 76).length;
+  const clean_candidates = all.filter((c) => passesCleanFilter(c, settings)).length;
+  const flagCounts = new Map<string, number>();
+  for (const c of all) for (const f of c.risk_flags) flagCounts.set(f, (flagCounts.get(f) ?? 0) + 1);
+  const main_risk = [...flagCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const nets2 = top_networks.join(' and ') || 'multiple networks';
+  const text_en = !all.length
+    ? 'Early Opportunity Radar found no candidates passing the clean filters this period.'
+    : `Early Opportunity Radar shows activity concentrated on ${nets2}. ${clean_candidates} candidate${clean_candidates === 1 ? '' : 's'} pass the clean filter${high_attention ? ` and ${high_attention} show high early attention` : ''}, but many still require validation${main_risk ? ` due to ${main_risk.toLowerCase()}` : ''}. These are research candidates only — not buy signals.`;
+  const text_sw = !all.length
+    ? 'Early Opportunity Radar haijapata candidates zilizopita vichujio safi kipindi hiki.'
+    : `Early Opportunity Radar inaonyesha shughuli zimejikita kwenye ${nets2}. Candidates ${clean_candidates} zimepita kichujio safi${high_attention ? ` na ${high_attention} zinaonyesha umakini wa mapema` : ''}, lakini nyingi bado zinahitaji uthibitisho${main_risk ? ` kutokana na ${main_risk.toLowerCase()}` : ''}. Hizi ni candidates za utafiti tu — si ishara za kununua.`;
+  return { top_networks, top_narratives, high_attention, clean_candidates, main_risk, text_en, text_sw };
 };
 
 /** Premium-clean filter — drops illiquid / wash / honeypot candidates from the default view. */

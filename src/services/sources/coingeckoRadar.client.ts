@@ -44,7 +44,8 @@ export interface CgCategory {
   market_cap: number | null;
   market_cap_change_24h: number | null;
   volume_24h: number | null;
-  top_3_coins?: string[];
+  top_3_coins?: string[]; // image URLs (not displayed)
+  top_3_coins_id?: string[]; // readable coin slugs (used for "related assets")
 }
 
 export interface CgMarketCoin {
