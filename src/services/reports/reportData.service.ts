@@ -11,6 +11,7 @@ import { computeExitStrategy } from '../exit-strategy/exitStrategy.service';
 import { getProfile } from '../exit-strategy/exitStrategySettings.service';
 import { buildSimExample, type SimExample } from '../exit-strategy/exitSimulator.service';
 import { computeLogRegression } from '../log-regression/logRegression.service';
+import { buildAltBtcReportSummary } from '../alt-btc-bottom/altBtcBottom.service';
 import { getSupplyProfitLossLatest } from '../sync/supply-profit-loss.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +134,14 @@ export interface ReportSnapshot {
     funding_high: boolean;
     funding_negative: boolean;
     oi_rising: boolean;
+  } | null;
+  alt_btc_bottom: {
+    text_en: string;
+    text_sw: string;
+    above_ma50_percent: number;
+    confirmed: number;
+    early: number;
+    leaders: string[];
   } | null;
   watchlist: null; // per-user; not part of the global market snapshot
   sectors: null; // sector-rankings module not yet implemented
@@ -487,7 +496,29 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     };
   };
 
-  const [risk, cycle, onchain, social, altcoin, ecosystem, exit, logreg, derivatives] = await Promise.all([
+  const buildAltBtcBottom = async (): Promise<ReportSnapshot['alt_btc_bottom']> => {
+    const { data: b } = await supabase.from('alt_btc_bottom_breadth_daily').select('*').order('date', { ascending: false }).limit(1).maybeSingle();
+    if (!b) return null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const summary = buildAltBtcReportSummary(b as any);
+    const { data: leaders } = await supabase
+      .from('alt_btc_bottom_daily')
+      .select('symbol, status_label, bottom_score')
+      .eq('date', b.date)
+      .in('status_label', ['Confirmed recovery', 'Relative strength leader'])
+      .order('bottom_score', { ascending: false })
+      .limit(3);
+    return {
+      text_en: summary.text_en,
+      text_sw: summary.text_sw,
+      above_ma50_percent: Number(b.above_ma50_percent ?? 0),
+      confirmed: Number(b.confirmed_strength_count ?? 0) + Number(b.leadership_count ?? 0),
+      early: Number(b.early_recovery_count ?? 0),
+      leaders: (leaders ?? []).map((l) => `${(l.symbol as string) ?? ''}/BTC`)
+    };
+  };
+
+  const [risk, cycle, onchain, social, altcoin, ecosystem, exit, logreg, derivatives, alt_btc_bottom] = await Promise.all([
     guard('btc_risk', () => buildRisk(lookback)),
     guard('btc_cycle', () => buildCycle()),
     guard('onchain', () => buildOnchain(lookback)),
@@ -496,7 +527,8 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     guard('ecosystem', () => buildEcosystem()),
     guard('exit_strategy', () => buildExit()),
     guard('log_regression', () => buildLogReg()),
-    guard('derivatives', () => buildDerivatives())
+    guard('derivatives', () => buildDerivatives()),
+    guard('alt_btc_bottom', () => buildAltBtcBottom())
   ]);
   availability.watchlist = 'unavailable'; // per-user, not part of the global snapshot
   availability.sectors = 'unavailable'; // module not implemented yet
@@ -513,6 +545,7 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     exit,
     logreg,
     derivatives,
+    alt_btc_bottom,
     watchlist: null,
     sectors: null,
     availability

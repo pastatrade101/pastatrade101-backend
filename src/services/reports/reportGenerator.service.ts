@@ -91,6 +91,7 @@ const PREMIUM_SECTIONS = new Set([
   'exit_simulation_example',
   'log_regression',
   'derivatives',
+  'alt_btc_bottom',
   'premium_takeaway'
 ]);
 
@@ -115,6 +116,7 @@ const SECTION_TITLES: Record<string, { en: string; sw: string }> = {
   exit_simulation_example: { en: 'Exit Simulation Example', sw: 'Mfano wa Simulesheni ya Kutoka' },
   log_regression: { en: 'Logarithmic Regression', sw: 'Regression ya Logarithmic' },
   derivatives: { en: 'Derivatives / Leverage Risk', sw: 'Hatari ya Leverage' },
+  alt_btc_bottom: { en: 'Alt/BTC Bottom Radar', sw: 'Rada ya Sakafu ya Alt/BTC' },
   watchlist: { en: 'Watchlist', sw: 'Orodha ya Kufuatilia' },
   sectors: { en: 'Sector Rotation', sw: 'Mzunguko wa Sekta' },
   disclaimer: { en: 'Disclaimer', sw: 'Kanusho' }
@@ -488,6 +490,14 @@ const sectionContent = (key: string, s: ReportSnapshot, lang: Language, short: b
       if (lvl < 0.45) return `Hatari ya derivatives ipo chini (${d.leverage_percent}/100). Funding ipo kawaida na open interest haipanuki kwa kasi, ikionyesha leverage ipo shwari.`;
       if (lvl < 0.6) return `Hatari ya derivatives ipo wastani (${d.leverage_percent}/100). Leverage ipo lakini bado haijazidi — fuatilia kama funding na open interest zikiendelea kupanda.`;
       return `Hatari ya derivatives inapanda (${d.leverage_percent}/100). Funding chanya na open interest inayopanda zinaonyesha leverage ya long inajengeka, jambo linaloweza kufanya soko liwe dhaifu zaidi.`;
+    }
+
+    case 'alt_btc_bottom': {
+      const a = s.alt_btc_bottom;
+      if (!a) return en ? 'Alt/BTC Bottom Radar data is unavailable for this report.' : 'Takwimu za Alt/BTC Bottom Radar hazipatikani kwa taarifa hii.';
+      const base = en ? a.text_en : a.text_sw;
+      const lead = a.leaders?.length ? (en ? ` Leading BTC pairs: ${a.leaders.join(', ')}. These are relative-strength research signals, not buy signals.` : ` Pairs zinazoongoza dhidi ya BTC: ${a.leaders.join(', ')}. Hizi ni ishara za utafiti wa nguvu, si ishara za kununua.`) : '';
+      return `${base}${lead}`;
     }
 
     default:
