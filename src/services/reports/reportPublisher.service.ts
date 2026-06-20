@@ -11,13 +11,13 @@ import { generateReport, marketPosture, type Audience, type GenerateOptions, typ
 
 const DEFAULT_SECTIONS: Record<ReportType, string[]> = {
   // Daily — short + tactical, easy to share.
-  daily: ['market_status', 'what_changed', 'btc_risk', 'altcoin_btc', 'ecosystem', 'exit_strategy', 'derivatives', 'alt_btc_bottom', 'risk_warnings', 'premium_takeaway', 'disclaimer'],
+  daily: ['market_status', 'what_changed', 'btc_risk', 'altcoin_btc', 'ecosystem', 'exit_strategy', 'derivatives', 'alt_btc_bottom', 'early_opportunity', 'risk_warnings', 'premium_takeaway', 'disclaimer'],
   // Weekly — trend development.
-  weekly: ['market_status', 'what_changed', 'btc_risk', 'log_regression', 'onchain', 'social', 'altcoin_btc', 'ecosystem', 'strongest_signals', 'weakest_areas', 'exit_strategy', 'derivatives', 'alt_btc_bottom', 'confirmation_needed', 'risk_warnings', 'premium_takeaway', 'data_coverage', 'disclaimer'],
+  weekly: ['market_status', 'what_changed', 'btc_risk', 'log_regression', 'onchain', 'social', 'altcoin_btc', 'ecosystem', 'strongest_signals', 'weakest_areas', 'exit_strategy', 'derivatives', 'alt_btc_bottom', 'early_opportunity', 'confirmation_needed', 'risk_warnings', 'premium_takeaway', 'data_coverage', 'disclaimer'],
   // Monthly — full market structure.
-  monthly: ['market_status', 'executive_summary', 'what_changed', 'market_posture', 'btc_risk', 'btc_cycle', 'log_regression', 'onchain', 'social', 'altcoin_btc', 'ecosystem', 'strongest_signals', 'weakest_areas', 'exit_strategy', 'exit_simulation_example', 'derivatives', 'alt_btc_bottom', 'confirmation_needed', 'risk_warnings', 'premium_takeaway', 'data_coverage', 'disclaimer'],
+  monthly: ['market_status', 'executive_summary', 'what_changed', 'market_posture', 'btc_risk', 'btc_cycle', 'log_regression', 'onchain', 'social', 'altcoin_btc', 'ecosystem', 'strongest_signals', 'weakest_areas', 'exit_strategy', 'exit_simulation_example', 'derivatives', 'alt_btc_bottom', 'early_opportunity', 'confirmation_needed', 'risk_warnings', 'premium_takeaway', 'data_coverage', 'disclaimer'],
   special: ['market_status', 'executive_summary', 'what_changed', 'btc_risk', 'risk_warnings', 'premium_takeaway', 'disclaimer'],
-  premium: ['market_status', 'executive_summary', 'what_changed', 'market_posture', 'btc_risk', 'btc_cycle', 'log_regression', 'onchain', 'social', 'altcoin_btc', 'ecosystem', 'strongest_signals', 'weakest_areas', 'exit_strategy', 'exit_simulation_example', 'derivatives', 'alt_btc_bottom', 'confirmation_needed', 'risk_warnings', 'premium_takeaway', 'data_coverage', 'disclaimer'],
+  premium: ['market_status', 'executive_summary', 'what_changed', 'market_posture', 'btc_risk', 'btc_cycle', 'log_regression', 'onchain', 'social', 'altcoin_btc', 'ecosystem', 'strongest_signals', 'weakest_areas', 'exit_strategy', 'exit_simulation_example', 'derivatives', 'alt_btc_bottom', 'early_opportunity', 'confirmation_needed', 'risk_warnings', 'premium_takeaway', 'data_coverage', 'disclaimer'],
   preview: ['market_status', 'executive_summary', 'market_posture', 'disclaimer']
 };
 

@@ -1,7 +1,7 @@
 import { supabase } from '../../config/supabase';
 import { getCategories } from '../sources/coingeckoRadar.client';
 import { getSettings } from './earlyOpportunitySettings.service';
-import { buildNarrativeLeaderboard, buildNetworkLeaderboard, buildSummary, buildTakeaway, passesCleanFilter, type RadarCandidate } from './earlyOpportunity.service';
+import { buildNarrativeLeaderboard, buildNetworkLeaderboard, buildRadarReportSummary, buildSummary, buildTakeaway, passesCleanFilter, type RadarCandidate, type RadarReportSummary } from './earlyOpportunity.service';
 
 export interface RadarQuery {
   tab?: string; // trending_coins | trending_pools | narratives | all
@@ -146,3 +146,15 @@ export const getNetworks = async () => {
 export const getNarratives = async () => buildNarrativeLeaderboard(await getCategories().catch(() => []));
 
 export const getSourceStatus = sourceStatus;
+
+/** Report summary — assembles stored candidates → buildRadarReportSummary. Null when empty. */
+export const getRadarReportSummary = async (): Promise<RadarReportSummary | null> => {
+  const settings = await getSettings();
+  const { data } = await supabase.from('early_opportunity_candidates').select('*').order('opportunity_score', { ascending: false }).limit(500);
+  const all = (data ?? []) as unknown as RadarCandidate[];
+  if (!all.length) return null;
+  const narratives = buildNarrativeLeaderboard(await getCategories().catch(() => []));
+  const clean = all.filter((c) => passesCleanFilter(c, settings));
+  const networks = buildNetworkLeaderboard(clean.length ? clean : all);
+  return buildRadarReportSummary(all, networks, narratives, settings);
+};

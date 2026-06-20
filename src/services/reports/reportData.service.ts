@@ -12,6 +12,7 @@ import { getProfile } from '../exit-strategy/exitStrategySettings.service';
 import { buildSimExample, type SimExample } from '../exit-strategy/exitSimulator.service';
 import { computeLogRegression } from '../log-regression/logRegression.service';
 import { buildAltBtcReportSummary } from '../alt-btc-bottom/altBtcBottom.service';
+import { getRadarReportSummary } from '../early-opportunity/earlyOpportunityView.service';
 import { getSupplyProfitLossLatest } from '../sync/supply-profit-loss.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +143,12 @@ export interface ReportSnapshot {
     confirmed: number;
     early: number;
     leaders: string[];
+  } | null;
+  early_opportunity: {
+    text_en: string;
+    text_sw: string;
+    top_networks: string[];
+    high_attention: number;
   } | null;
   watchlist: null; // per-user; not part of the global market snapshot
   sectors: null; // sector-rankings module not yet implemented
@@ -518,7 +525,13 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     };
   };
 
-  const [risk, cycle, onchain, social, altcoin, ecosystem, exit, logreg, derivatives, alt_btc_bottom] = await Promise.all([
+  const buildEarlyOpportunity = async (): Promise<ReportSnapshot['early_opportunity']> => {
+    const s = await getRadarReportSummary();
+    if (!s) return null;
+    return { text_en: s.text_en, text_sw: s.text_sw, top_networks: s.top_networks, high_attention: s.high_attention };
+  };
+
+  const [risk, cycle, onchain, social, altcoin, ecosystem, exit, logreg, derivatives, alt_btc_bottom, early_opportunity] = await Promise.all([
     guard('btc_risk', () => buildRisk(lookback)),
     guard('btc_cycle', () => buildCycle()),
     guard('onchain', () => buildOnchain(lookback)),
@@ -528,7 +541,8 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     guard('exit_strategy', () => buildExit()),
     guard('log_regression', () => buildLogReg()),
     guard('derivatives', () => buildDerivatives()),
-    guard('alt_btc_bottom', () => buildAltBtcBottom())
+    guard('alt_btc_bottom', () => buildAltBtcBottom()),
+    guard('early_opportunity', () => buildEarlyOpportunity())
   ]);
   availability.watchlist = 'unavailable'; // per-user, not part of the global snapshot
   availability.sectors = 'unavailable'; // module not implemented yet
@@ -546,6 +560,7 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     logreg,
     derivatives,
     alt_btc_bottom,
+    early_opportunity,
     watchlist: null,
     sectors: null,
     availability

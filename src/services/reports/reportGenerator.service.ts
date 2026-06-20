@@ -92,6 +92,7 @@ const PREMIUM_SECTIONS = new Set([
   'log_regression',
   'derivatives',
   'alt_btc_bottom',
+  'early_opportunity',
   'premium_takeaway'
 ]);
 
@@ -117,6 +118,7 @@ const SECTION_TITLES: Record<string, { en: string; sw: string }> = {
   log_regression: { en: 'Logarithmic Regression', sw: 'Regression ya Logarithmic' },
   derivatives: { en: 'Derivatives / Leverage Risk', sw: 'Hatari ya Leverage' },
   alt_btc_bottom: { en: 'Alt/BTC Bottom Radar', sw: 'Rada ya Sakafu ya Alt/BTC' },
+  early_opportunity: { en: 'Early Opportunity Radar', sw: 'Rada ya Fursa za Mapema' },
   watchlist: { en: 'Watchlist', sw: 'Orodha ya Kufuatilia' },
   sectors: { en: 'Sector Rotation', sw: 'Mzunguko wa Sekta' },
   disclaimer: { en: 'Disclaimer', sw: 'Kanusho' }
@@ -498,6 +500,12 @@ const sectionContent = (key: string, s: ReportSnapshot, lang: Language, short: b
       const base = en ? a.text_en : a.text_sw;
       const lead = a.leaders?.length ? (en ? ` Leading BTC pairs: ${a.leaders.join(', ')}. These are relative-strength research signals, not buy signals.` : ` Pairs zinazoongoza dhidi ya BTC: ${a.leaders.join(', ')}. Hizi ni ishara za utafiti wa nguvu, si ishara za kununua.`) : '';
       return `${base}${lead}`;
+    }
+
+    case 'early_opportunity': {
+      const e = s.early_opportunity;
+      if (!e) return en ? 'Early Opportunity Radar data is unavailable for this report.' : 'Takwimu za Early Opportunity Radar hazipatikani kwa taarifa hii.';
+      return en ? e.text_en : e.text_sw;
     }
 
     default:
