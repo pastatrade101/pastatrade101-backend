@@ -34,6 +34,16 @@ export const assignPlan = async (userId: string, input: AssignPlanInput) => {
   if (!planId) throw new Error('Unknown plan.');
   const status = input.status ?? 'active';
 
+  // Retire any existing live subscriptions first so a user only ever has ONE
+  // active row (the signup `system` free row + each assignment used to stack up
+  // and show the same user twice on the admin Subscriptions page). History is
+  // kept as `superseded` rather than deleted.
+  await supabase
+    .from('subscriptions')
+    .update({ status: 'superseded', updated_at: new Date().toISOString() })
+    .eq('user_id', userId)
+    .in('status', ['active', 'trialing', 'past_due', 'manual']);
+
   await supabase.from('subscriptions').insert({
     user_id: userId,
     plan_id: planId,

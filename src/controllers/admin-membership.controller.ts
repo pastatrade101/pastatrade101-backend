@@ -359,6 +359,16 @@ export const adminListSubscriptions = asyncHandler(async (req, res) => {
       return (u?.email ?? '').toLowerCase().includes(q) || (u?.full_name ?? '').toLowerCase().includes(q);
     });
 
+  // One row per user — the latest subscription (data is ordered created_at desc).
+  // Historical/superseded rows remain visible in the per-subscription drawer.
+  const seen = new Set<string>();
+  items = items.filter((s) => {
+    const uid = s.user_id as string;
+    if (seen.has(uid)) return false;
+    seen.add(uid);
+    return true;
+  });
+
   return sendSuccess(res, 'Subscriptions fetched successfully.', { items });
 });
 
