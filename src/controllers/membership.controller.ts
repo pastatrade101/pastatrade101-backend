@@ -4,8 +4,10 @@ import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { resolveUserAccess } from '../services/membership/plan-access';
 import { getUsage } from '../services/membership/usage.service';
-import { cancelSubscription } from '../services/membership/subscription.service';
+import { assignPlan, cancelSubscription } from '../services/membership/subscription.service';
 import { getPaymentProvider } from '../services/payments';
+
+const addDaysIso = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString();
 
 // GET /api/v1/me/features — the plan access summary the frontend gates on.
 export const getMyFeatures = asyncHandler(async (req, res) => {
@@ -100,6 +102,45 @@ export const requestUpgrade = asyncHandler(async (req, res) => {
     event_payload: { plan_slug, interval }
   });
   return sendSuccess(res, `Upgrade request received for ${plan.name}. An admin will activate your subscription shortly.`, { plan_slug, status: 'pending' });
+});
+
+// POST /api/v1/me/verify-payment — pull-based fallback when the provider webhook
+// is missed/delayed. Looks up the user's latest pending attempt, asks the provider
+// for its live status, and activates the plan if it's actually paid. Idempotent:
+// once an attempt is marked completed it won't re-activate.
+export const verifyMyPayment = asyncHandler(async (req, res) => {
+  const provider = getPaymentProvider();
+  if (!provider?.fetchStatus) return sendSuccess(res, 'Automatic verification is not available — an admin will confirm your payment.', { activated: false, reason: 'no_provider' });
+
+  const { data: attempt } = await supabase
+    .from('payment_attempts')
+    .select('id, reference, plan_slug, billing_interval')
+    .eq('user_id', req.user!.sub)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!attempt?.reference) return sendSuccess(res, 'No pending payment to verify.', { activated: false, reason: 'no_pending' });
+
+  const status = await provider.fetchStatus(attempt.reference as string);
+  if (!status) return sendSuccess(res, 'Could not reach the payment provider. Please try again shortly.', { activated: false, reason: 'unreachable' });
+  if (!status.paid) return sendSuccess(res, 'Your payment has not completed yet. If you have paid, give it a minute and try again.', { activated: false, status: status.status });
+
+  // Paid → activate (assignPlan supersedes any prior subscription → one active row).
+  const interval = attempt.billing_interval === 'yearly' ? 'yearly' : 'monthly';
+  await assignPlan(req.user!.sub, {
+    planSlug: attempt.plan_slug as string,
+    status: 'active',
+    provider: provider.name,
+    billing_interval: interval,
+    current_period_start: new Date().toISOString(),
+    current_period_end: addDaysIso(interval === 'yearly' ? 365 : 30),
+    note: `Activated via self-verify (${attempt.reference})`
+  });
+  await supabase.from('payment_attempts').update({ status: 'completed', updated_at: new Date().toISOString() }).eq('id', attempt.id);
+  await supabase.from('payment_events').insert({ user_id: req.user!.sub, provider: provider.name, event_type: 'payment.completed', status: 'completed', event_payload: { reference: attempt.reference, via: 'self-verify' } });
+
+  return sendSuccess(res, 'Payment verified — your plan is now active.', { activated: true, plan_slug: attempt.plan_slug });
 });
 
 // POST /api/v1/me/cancel-subscription — downgrade to free at period end.

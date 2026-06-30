@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 import { snippe } from '../../config/env';
 import { AppError } from '../../utils/api-response';
-import type { CheckoutInput, CheckoutResult, NormalizedEvent, PaymentProvider } from './provider';
+import type { CheckoutInput, CheckoutResult, NormalizedEvent, PaymentProvider, PaymentStatus } from './provider';
+
+const PAID = new Set(['completed', 'paid', 'success', 'successful', 'succeeded']);
 
 // Snippe adapter (https://docs.snippe.sh, API version 2026-01-25). Uses hosted
 // Payment Sessions so Pastatrade never handles card / mobile-money credentials.
@@ -110,5 +112,22 @@ export const snippeProvider: PaymentProvider = {
       metadata: (e.data?.metadata ?? {}) as Record<string, unknown>,
       raw: body
     };
+  },
+
+  // Pull the live session status (used by the "verify my payment" fallback).
+  async fetchStatus(reference: string): Promise<PaymentStatus | null> {
+    if (!reference) return null;
+    try {
+      const res = await fetch(`${snippe.baseUrl}/api/v1/sessions/${encodeURIComponent(reference)}`, {
+        headers: { Authorization: `Bearer ${snippe.apiKey}`, accept: 'application/json' }
+      });
+      const text = await res.text();
+      if (!res.ok) return null;
+      const json = (text ? JSON.parse(text) : {}) as { data?: { status?: string; metadata?: Record<string, unknown> } };
+      const status = (json.data?.status ?? '').toLowerCase();
+      return { reference, status, paid: PAID.has(status), metadata: json.data?.metadata ?? {} };
+    } catch {
+      return null;
+    }
   }
 };

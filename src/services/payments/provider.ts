@@ -31,6 +31,14 @@ export interface NormalizedEvent {
   raw: unknown; // full original payload for the audit trail
 }
 
+// Pull-based status check (so a missed/delayed webhook never strands a payer).
+export interface PaymentStatus {
+  reference: string;
+  status: string;
+  paid: boolean;
+  metadata: Record<string, unknown>;
+}
+
 export interface PaymentProvider {
   readonly name: string;
   createCheckout(input: CheckoutInput): Promise<CheckoutResult>;
@@ -38,4 +46,6 @@ export interface PaymentProvider {
   verifyWebhook(rawBody: Buffer | string, headers: Record<string, string | undefined>): boolean;
   /** Parse an already-verified payload into a normalized event. */
   parseEvent(body: unknown): NormalizedEvent;
+  /** Query the provider for a session/payment status by reference. Null on error. */
+  fetchStatus?(reference: string): Promise<PaymentStatus | null>;
 }
