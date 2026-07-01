@@ -3,11 +3,12 @@ import { AppError, sendSuccess } from '../utils/api-response';
 import { getQueryString } from '../utils/query';
 import { listPublicIcoProjects, getIcoProject, icoProjectsToCsv } from '../services/ico-intelligence/icoIntelligence.service';
 import { ICO_DISCLAIMER } from '../services/ico-intelligence/icoScoring.service';
-import { resolveUserAccess, canAccess, cheapestPlanWith } from '../services/membership/plan-access';
+import { resolveUserAccess, canAccess, cheapestPlanWith, limitFor } from '../services/membership/plan-access';
 
 // Public Early Project Radar API. Approved + published projects only. Soft-gated:
-// entitled plans see everything; others get a single-card preview + upgrade info.
-const FREE_PREVIEW = 1;
+// entitled plans see everything; others get an admin-tunable preview (the
+// max_early_project_preview plan limit; default 1, 0 = hidden) + upgrade info.
+const DEFAULT_PREVIEW = 1;
 
 export const getIcoProjectsCtrl = asyncHandler(async (req, res) => {
   const access = await resolveUserAccess(req.user!.sub);
@@ -21,9 +22,12 @@ export const getIcoProjectsCtrl = asyncHandler(async (req, res) => {
 
   if (entitled) return sendSuccess(res, 'ICO projects loaded.', { items, locked: false, disclaimer: ICO_DISCLAIMER });
 
+  // Preview size is a per-plan limit the admin controls (null → default).
+  const configured = limitFor(access, 'max_early_project_preview');
+  const previewCount = Math.max(0, configured ?? DEFAULT_PREVIEW);
   const required_plan = await cheapestPlanWith('access_early_project_radar');
   return sendSuccess(res, 'ICO projects preview.', {
-    items: items.slice(0, FREE_PREVIEW),
+    items: items.slice(0, previewCount),
     locked: true,
     total: items.length,
     required_plan,
