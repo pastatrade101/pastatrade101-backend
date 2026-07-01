@@ -7,6 +7,7 @@ export type SaleStatus = 'active' | 'upcoming' | 'ended' | 'unknown';
 export interface IcoRawProject {
   project_name: string;
   token_symbol: string | null;
+  image_url: string | null;
   category: string | null;
   sale_status: SaleStatus;
   sale_type: string | null;

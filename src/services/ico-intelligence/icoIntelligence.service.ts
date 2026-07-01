@@ -33,6 +33,7 @@ const dataRow = (p: IcoRawProject, source: string): Record<string, any> => {
     dedup_key: dedupKey(p),
     project_name: p.project_name,
     token_symbol: p.token_symbol,
+    image_url: p.image_url,
     website: p.website,
     category: p.category,
     description: p.description,
@@ -98,7 +99,7 @@ export const storeIcoProjects = async (raws: IcoRawProject[], source = 'icodrops
 };
 
 // ── Reads ──
-const PUBLIC_FIELDS = 'id, project_name, token_symbol, category, description, sale_status, sale_type, sale_date, raise_amount, raise_amount_text, backers, social_links, website, whitepaper_url, tokenomics, vesting, score, classification, score_components, red_flags, source, source_url, last_checked_at';
+const PUBLIC_FIELDS = 'id, project_name, token_symbol, image_url, category, description, sale_status, sale_type, sale_date, raise_amount, raise_amount_text, backers, social_links, website, whitepaper_url, tokenomics, vesting, score, classification, score_components, red_flags, source, source_url, last_checked_at';
 
 export interface IcoListFilters {
   status?: string; // sale status

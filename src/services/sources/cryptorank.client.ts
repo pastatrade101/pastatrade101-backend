@@ -114,6 +114,7 @@ const normalize = (d: any): IcoRawProject | null => {
   return {
     project_name: String(d.name).trim(),
     token_symbol: d.symbol ?? null,
+    image_url: d.imageUrl ?? null,
     category: d.category?.name ?? tags[0] ?? null,
     sale_status: lifecycleToStatus(d.lifecycle),
     sale_type: d.type ?? null,

@@ -144,6 +144,7 @@ const normalizeApiRecord = (r: any, fallbackStatus: SaleStatus): IcoRawProject |
   return {
     project_name: String(name).trim(),
     token_symbol: r?.symbol ?? r?.ticker ?? r?.token_symbol ?? null,
+    image_url: r?.image ?? r?.logo ?? r?.image_url ?? null,
     category: r?.category ?? r?.categories?.[0] ?? r?.niche ?? null,
     sale_status: asStatus(r?.status ?? r?.sale_status ?? fallbackStatus),
     sale_type: r?.sale_type ?? r?.launchpad ?? r?.type ?? null,
@@ -245,9 +246,12 @@ export const parseListingHtml = (html: string): IcoRawProject[] => {
       const raise_amount = rm ? Math.round(Number(rm[1]) * ({ k: 1e3, m: 1e6, b: 1e9 }[rm[2].toLowerCase()] ?? 1)) : null;
       const href = card.closest('a').attr('href') || card.find('a').attr('href') || '';
       const source_url = href ? (href.startsWith('http') ? href : `${icodrops.baseUrl}${href}`) : null;
+      const avt = card.find('.Project-Card__avt');
+      const image_url = avt.attr('data-src') || avt.attr('src') || (avt.attr('data-srcset') || '').split(' ')[0] || null;
       out.push({
         project_name: name,
         token_symbol: card.find('.Project-Card__ticker').text().trim() || null,
+        image_url,
         category: card.find('.Project-Card__type').text().trim() || null,
         sale_status: status,
         sale_type: card.find('.Project-Card__label, .List-Labels').first().text().replace(/\s+/g, ' ').trim() || null,
