@@ -3,17 +3,32 @@ import { AppError, sendSuccess } from '../utils/api-response';
 import { getQueryString } from '../utils/query';
 import { listPublicIcoProjects, getIcoProject, icoProjectsToCsv } from '../services/ico-intelligence/icoIntelligence.service';
 import { ICO_DISCLAIMER } from '../services/ico-intelligence/icoScoring.service';
+import { resolveUserAccess, canAccess, cheapestPlanWith } from '../services/membership/plan-access';
 
-// Public Early Project Radar API — approved + published projects only.
-// Mounted behind requireFeature('access_early_project_radar').
+// Public Early Project Radar API. Approved + published projects only. Soft-gated:
+// entitled plans see everything; others get a single-card preview + upgrade info.
+const FREE_PREVIEW = 1;
 
 export const getIcoProjectsCtrl = asyncHandler(async (req, res) => {
+  const access = await resolveUserAccess(req.user!.sub);
+  const entitled = canAccess(access, 'access_early_project_radar');
+
   const items = await listPublicIcoProjects({
-    status: getQueryString(req.query, 'status') || undefined,
-    classification: getQueryString(req.query, 'classification') || undefined,
-    search: getQueryString(req.query, 'search') || undefined
+    status: entitled ? getQueryString(req.query, 'status') || undefined : undefined,
+    classification: entitled ? getQueryString(req.query, 'classification') || undefined : undefined,
+    search: entitled ? getQueryString(req.query, 'search') || undefined : undefined
   });
-  return sendSuccess(res, 'ICO projects loaded.', { items, disclaimer: ICO_DISCLAIMER });
+
+  if (entitled) return sendSuccess(res, 'ICO projects loaded.', { items, locked: false, disclaimer: ICO_DISCLAIMER });
+
+  const required_plan = await cheapestPlanWith('access_early_project_radar');
+  return sendSuccess(res, 'ICO projects preview.', {
+    items: items.slice(0, FREE_PREVIEW),
+    locked: true,
+    total: items.length,
+    required_plan,
+    disclaimer: ICO_DISCLAIMER
+  });
 });
 
 export const getIcoProjectCtrl = asyncHandler(async (req, res) => {
