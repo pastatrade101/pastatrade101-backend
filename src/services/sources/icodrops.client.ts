@@ -22,7 +22,7 @@ export type { SaleStatus, IcoRawProject, IcoCollectResult } from '../ico-intelli
 const UA = 'Pastatrade101-Radar/1.0 (+https://pastatrade101.com; research)';
 const MIN_REQUEST_GAP_MS = 3000; // polite rate limit
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const ICO_ENRICH_LIMIT = 60; // max detail pages to fetch per sync (politeness bound)
+const ICO_ENRICH_LIMIT = 80; // max detail pages to fetch per sync (politeness bound)
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -199,6 +199,23 @@ export const collectIcoProjects = async (): Promise<IcoCollectResult> => {
   if (!html) return { projects: [], status: 'error', detail: 'homepage fetch failed' };
   const projects = parseListingHtml(html);
 
+  // Fuller coverage: the category pages carry the complete Active/Upcoming lists
+  // (~50 each) via .Cll-Project. Merge them in, deduped against the homepage.
+  // (Ended is skipped — it's a huge historical archive = noise + heavy load.)
+  const seen = new Set(projects.map((p) => `${p.project_name.toLowerCase()}|${(p.token_symbol ?? '').toLowerCase()}`));
+  for (const [path, status] of [['/category/active-ico', 'active'], ['/category/upcoming-ico', 'upcoming']] as const) {
+    if (!(await robotsAllows(path))) continue;
+    await throttle();
+    const chtml = await fetchText(`${icodrops.baseUrl}${path}`, { headers: { 'user-agent': UA } });
+    if (!chtml) continue;
+    for (const p of parseCategoryHtml(chtml, status)) {
+      const key = `${p.project_name.toLowerCase()}|${(p.token_symbol ?? '').toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      projects.push(p);
+    }
+  }
+
   // Enrich each project from its detail page — this is where backers, website,
   // socials, tokenomics and vesting live. Robots-checked + throttled; bounded so
   // one sync stays polite. Best-effort per project (failures leave listing data).
@@ -212,6 +229,8 @@ export const collectIcoProjects = async (): Promise<IcoCollectResult> => {
     if (!dhtml) continue;
     const d = parseDetailHtml(dhtml);
     if (d.backers?.length) p.backers = d.backers;
+    if (!p.image_url && d.image_url) p.image_url = d.image_url;
+    if (!p.category && d.category) p.category = d.category;
     if (d.website) p.website = d.website;
     if (d.whitepaper_url) p.whitepaper_url = d.whitepaper_url;
     if (d.social_links && Object.keys(d.social_links).length) p.social_links = d.social_links;
@@ -272,6 +291,44 @@ export const parseListingHtml = (html: string): IcoRawProject[] => {
   return out;
 };
 
+// Parse a category page (/category/active-ico etc.) — the FULL list (~50/page)
+// via .Cll-Project rows. Sparse (name, ticker, logo, link); detail enrichment
+// fills raise/backers/category/socials. `status` comes from which page it is.
+export const parseCategoryHtml = (html: string, status: SaleStatus): IcoRawProject[] => {
+  const $ = load(html);
+  const out: IcoRawProject[] = [];
+  $('.Cll-Project').each((_, c) => {
+    const el = $(c);
+    const name = el.find('.Cll-Project__name').first().text().replace(/\s+/g, ' ').trim();
+    if (!name) return;
+    const href = el.find('.Cll-Project__link').attr('href') || el.find('a').attr('href') || '';
+    const source_url = href ? (href.startsWith('http') ? href : `${icodrops.baseUrl}${href}`) : null;
+    const img = el.find('img');
+    const raw = img.attr('data-src') || img.attr('src') || '';
+    const image_url = raw && !/\.svg(\?|$)/i.test(raw) ? raw : null; // skip trend.svg placeholders
+    out.push({
+      project_name: name,
+      token_symbol: el.find('.Cll-Project__ticker').first().text().trim() || null,
+      image_url,
+      category: null,
+      sale_status: status,
+      sale_type: null,
+      sale_date: null,
+      raise_amount_text: null,
+      raise_amount: null,
+      backers: [],
+      website: null,
+      whitepaper_url: null,
+      social_links: {},
+      description: null,
+      tokenomics: {},
+      vesting: {},
+      source_url
+    });
+  });
+  return out;
+};
+
 // Classify a project's external links into website / whitepaper / socials.
 const classifyLinks = (urls: string[]): { website: string | null; whitepaper: string | null; social: Record<string, string> } => {
   const social: Record<string, string> = {};
@@ -310,8 +367,10 @@ export const parseDetailHtml = (html: string): Partial<IcoRawProject> => {
   // Vesting only when a real vesting/unlock section exists (avoids capturing noise).
   const vestRaw = $('[class*="Distribution"], [class*="Vesting"], [class*="Unlock"]').first().text().replace(/\s+/g, ' ').trim();
   const hasVesting = /vest|unlock|cliff|tge|lockup|lock-up/i.test(vestRaw);
+  const ogImage = $('meta[property="og:image"]').attr('content')?.trim();
   return {
     backers,
+    image_url: ogImage && !/\.svg(\?|$)/i.test(ogImage) ? ogImage : undefined,
     website,
     whitepaper_url: whitepaper,
     social_links: social,
