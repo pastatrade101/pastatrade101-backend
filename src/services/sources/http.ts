@@ -45,3 +45,23 @@ export const fetchJson = async <T>(url: string, options: FetchJsonOptions = {}):
 
   throw lastError instanceof AppError ? lastError : new AppError(`${label} request failed.`, 502, [lastError]);
 };
+
+// Plain-text fetch (robots.txt, server-rendered HTML). Single attempt, own
+// timeout; returns null on any failure so callers can degrade gracefully.
+export const fetchText = async (url: string, options: { headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<string | null> => {
+  const { headers = {}, timeoutMs = 15000 } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      headers: { 'user-agent': 'Pastatrade101-Radar/1.0 (+https://pastatrade101.com; research)', accept: 'text/html,text/plain,*/*', ...headers },
+      signal: controller.signal
+    });
+    if (!response.ok) return null;
+    return await response.text();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+};

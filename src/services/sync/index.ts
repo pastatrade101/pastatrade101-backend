@@ -13,6 +13,7 @@ import { storeMacroRegimeDaily } from '../macro-regime/macroRegime.service';
 import { storeExitStrategyDaily } from '../exit-strategy/exitStrategy.service';
 import { runEarlyOpportunitySync } from '../early-opportunity/earlyOpportunitySync.service';
 import { runAltBtcBottomSync } from '../alt-btc-bottom/altBtcBottomSync.service';
+import { runIcoSync } from '../ico-intelligence/icoSync.service';
 import { withJob } from './sync-jobs';
 
 export interface FullSyncStep {
@@ -87,6 +88,9 @@ export const runFullSync = async (triggeredBy?: string): Promise<FullSyncResult>
   // Alt/BTC Bottom Radar reads the daily series (prior cycle's; price-series
   // refreshes them below). One-day lag is negligible for 365-day relative-strength.
   steps.push(await run('alt-btc-bottom', 'radar', 'alt-btc-bottom', () => runAltBtcBottomSync()));
+  // ICO / Early Project Radar (ICO Drops). Independent + graceful: returns 0 when
+  // the collector is disabled or robots-blocked, so it never affects the pipeline.
+  steps.push(await run('ico', 'ico-radar', 'ico', () => runIcoSync()));
   // price-series is the slowest step (throttled CoinGecko loop) — run it near the
   // end so the quick steps surface first. It refreshes the price series for next cycle.
   steps.push(await run('price-series', 'coingecko', 'price-series', () => syncPriceSeries()));

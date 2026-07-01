@@ -36,6 +36,26 @@ const envSchema = z.object({
   SERPAPI_API_KEY: z.string().optional().or(z.literal('')),
   // Twelve Data (macro regime: DXY / SPY / VIX / gold). Blank → module unavailable.
   TWELVE_DATA_API_KEY: z.string().optional().or(z.literal('')),
+  // ICO intelligence (Early Project Radar) source. Disabled by default — no
+  // scraping happens until ICODROPS_ENABLED=true AND a source URL is set. Robots
+  // rules are still honoured at runtime regardless of these.
+  ICODROPS_ENABLED: z
+    .string()
+    .optional()
+    .transform((value) => value === 'true'),
+  ICODROPS_BASE_URL: z.string().url().default('https://icodrops.com'),
+  // Optional JSON endpoint (API-first). Leave blank to use the HTML collector.
+  ICODROPS_API_URL: z.string().optional().or(z.literal('')),
+  // CryptoRank — documented ICO / funding-round API (the primary Early Project
+  // Radar source). Blank key → source is simply skipped in the sync.
+  CRYPTORANK_API_KEY: z.string().optional().or(z.literal('')),
+  CRYPTORANK_BASE_URL: z.string().url().default('https://api.cryptorank.io/v3'),
+  // Endpoint path for the project/ICO list. Overridable without a code change if
+  // your plan exposes a dedicated sales endpoint.
+  CRYPTORANK_ICO_PATH: z.string().optional().or(z.literal('')),
+  // Optional seed of CryptoRank ids to track (comma-separated). The admin UI is
+  // the main way to manage the tracked list; this just pre-seeds numeric ids.
+  CRYPTORANK_TRACK: z.string().optional().or(z.literal('')),
   COINGECKO_PRO: z
     .string()
     .optional()
@@ -98,6 +118,25 @@ export const snippe = {
 export const twelvedata = {
   apiKey: env.TWELVE_DATA_API_KEY || '',
   configured: Boolean(env.TWELVE_DATA_API_KEY)
+};
+
+// ICO intelligence source config. `enabled` requires the explicit opt-in flag; the
+// collector also checks robots.txt at runtime before fetching any path.
+export const icodrops = {
+  enabled: Boolean(env.ICODROPS_ENABLED),
+  baseUrl: env.ICODROPS_BASE_URL.replace(/\/+$/, ''),
+  apiUrl: env.ICODROPS_API_URL || '',
+  hasApi: Boolean(env.ICODROPS_API_URL)
+};
+
+// CryptoRank — documented ICO / funding API. `configured` (a key is present) gates
+// the source; the collector reads baseUrl + icoPath.
+export const cryptorank = {
+  apiKey: env.CRYPTORANK_API_KEY || '',
+  baseUrl: env.CRYPTORANK_BASE_URL.replace(/\/+$/, ''),
+  icoPath: env.CRYPTORANK_ICO_PATH || '/currencies',
+  track: (env.CRYPTORANK_TRACK || '').split(',').map((s) => s.trim()).filter(Boolean),
+  configured: Boolean(env.CRYPTORANK_API_KEY)
 };
 
 // CoinGecko sends Demo keys to api.coingecko.com and Pro keys to pro-api.coingecko.com,

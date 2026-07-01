@@ -387,6 +387,7 @@ export interface NetworkLeader {
 }
 export interface NarrativeLeader {
   narrative: string;
+  category_id: string | null; // CoinGecko category slug → links to its category page
   market_cap_change_24h: number | null;
   market_cap: number | null;
   top_coins: string[];
@@ -426,13 +427,13 @@ export const buildNetworkLeaderboard = (cands: RadarCandidate[]): NetworkLeader[
 // Pretty coin id → display name ("erc-404" → "Erc 404", "pandora" → "Pandora").
 const prettyId = (id: string) => id.split(/[-_]/).map((w) => cap(w)).join(' ');
 
-export const buildNarrativeLeaderboard = (categories: { name: string; market_cap: number | null; market_cap_change_24h: number | null; top_3_coins_id?: string[] }[]): NarrativeLeader[] =>
+export const buildNarrativeLeaderboard = (categories: { id?: string; name: string; market_cap: number | null; market_cap_change_24h: number | null; top_3_coins_id?: string[] }[]): NarrativeLeader[] =>
   [...categories]
     .filter((c) => c.market_cap_change_24h != null)
     .sort((a, b) => (b.market_cap_change_24h ?? 0) - (a.market_cap_change_24h ?? 0))
     .slice(0, 8)
     // top_3_coins_id are readable coin slugs; top_3_coins (image URLs) are NOT used.
-    .map((c) => ({ narrative: c.name, market_cap_change_24h: c.market_cap_change_24h, market_cap: c.market_cap, top_coins: (c.top_3_coins_id ?? []).slice(0, 3).map(prettyId) }));
+    .map((c) => ({ narrative: c.name, category_id: c.id ?? null, market_cap_change_24h: c.market_cap_change_24h, market_cap: c.market_cap, top_coins: (c.top_3_coins_id ?? []).slice(0, 3).map(prettyId) }));
 
 export const buildSummary = (cands: RadarCandidate[], settings: RadarSettings, narratives: NarrativeLeader[]): RadarSummary => {
   const nets = buildNetworkLeaderboard(cands);
