@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { supabase } from '../config/supabase';
 import { asyncHandler } from '../utils/async-handler';
@@ -11,6 +12,33 @@ import type { Audience, Language, Tone } from '../services/reports/reportGenerat
 // Mounted under /api/v1/admin (admin-only middleware applied by the router).
 
 const ADMIN_LIST_FIELDS = 'id, slug, title, report_type, audience, language, tone, status, report_date, published_at, created_at, quality';
+
+// ── Cover image upload (Supabase Storage) ──────────────────────────────────
+// Admins upload a cover file straight from disk; we store it in a public bucket
+// and return the URL that fills reports.cover_image_url. The raw body
+// (express.raw) avoids base64 bloat and the global 1mb JSON limit.
+const COVER_BUCKET = 'report-covers';
+const COVER_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+
+export const adminUploadReportCover = asyncHandler(async (req: Request, res: Response) => {
+  const contentType = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+  const ext = COVER_EXT[contentType];
+  if (!ext) throw new AppError('Unsupported image type. Use PNG, JPG, WebP or GIF.', 400);
+  const buf = req.body as Buffer;
+  if (!Buffer.isBuffer(buf) || buf.length === 0) throw new AppError('No image data received.', 400);
+  if (buf.length > 6 * 1024 * 1024) throw new AppError('Image is too large (max 6MB).', 400);
+
+  // Ensure the public bucket exists (idempotent — a repeat call just returns an
+  // "already exists" error we ignore).
+  await supabase.storage.createBucket(COVER_BUCKET, { public: true }).catch(() => undefined);
+
+  const path = `${new Date().toISOString().slice(0, 10)}/${randomUUID()}.${ext}`;
+  const { error } = await supabase.storage.from(COVER_BUCKET).upload(path, buf, { contentType, upsert: false });
+  if (error) throw new AppError(`Cover upload failed: ${error.message}`, 500, [error]);
+
+  const { data } = supabase.storage.from(COVER_BUCKET).getPublicUrl(path);
+  return sendSuccess(res, 'Cover image uploaded.', { url: data.publicUrl });
+});
 
 export const adminListReports = asyncHandler(async (req: Request, res: Response) => {
   const status = getQueryString(req.query, 'status');

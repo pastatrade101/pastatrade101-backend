@@ -90,6 +90,7 @@ const PREMIUM_SECTIONS = new Set([
   'exit_strategy',
   'exit_simulation_example',
   'log_regression',
+  'macro_regime',
   'derivatives',
   'alt_btc_bottom',
   'early_opportunity',
@@ -116,6 +117,7 @@ const SECTION_TITLES: Record<string, { en: string; sw: string }> = {
   exit_strategy: { en: 'Exit Strategy', sw: 'Mkakati wa Kutoka' },
   exit_simulation_example: { en: 'Exit Simulation Example', sw: 'Mfano wa Simulesheni ya Kutoka' },
   log_regression: { en: 'Logarithmic Regression', sw: 'Regression ya Logarithmic' },
+  macro_regime: { en: 'Macro Regime', sw: 'Mwelekeo wa Macro' },
   derivatives: { en: 'Derivatives / Leverage Risk', sw: 'Hatari ya Leverage' },
   alt_btc_bottom: { en: 'Alt/BTC Bottom Radar', sw: 'Rada ya Sakafu ya Alt/BTC' },
   early_opportunity: { en: 'Early Opportunity Radar', sw: 'Rada ya Fursa za Mapema' },
@@ -473,6 +475,24 @@ const sectionContent = (key: string, s: ReportSnapshot, lang: Language, short: b
       if (noExit) return `Kwa portfolio ya ${usd(x.portfolio)}, alama ya sasa ya Exit Risk ${s.exit.score.toFixed(2)} (${x.label}) haileti shinikizo kubwa la scale-out kwenye profaili ya ${x.profile}. (Mfano tu — si portfolio ya mtumiaji yeyote.)`;
       const range = x.exit_min_percent === x.exit_max_percent ? `${x.exit_max_percent}%` : `${x.exit_min_percent}–${x.exit_max_percent}%`;
       return `Kwa portfolio ya ${usd(x.portfolio)} kwenye profaili ya ${x.profile}, alama ya Exit Risk ${s.exit.score.toFixed(2)} (${x.label}) inaonyesha simulesheni ya scale-out ya ${range} — takriban ${usd(x.exit_min_amount)}–${usd(x.exit_max_amount)}, ikibaki takriban ${usd(x.remaining_min)}–${usd(x.remaining_max)} imewekezwa. Ni simulesheni ya hatari, si maelekezo ya kuuza.`;
+    }
+
+    case 'macro_regime': {
+      const m = s.macro_regime;
+      if (!m) return en ? 'Macro regime data is unavailable for this report.' : 'Takwimu za mwelekeo wa macro hazipatikani kwa taarifa hii.';
+      const sup = m.supportive.join(', ');
+      const cau = m.cautionary.join(', ');
+      if (en) {
+        const dollar = m.dollar_trend === 'strengthening' ? 'strengthening (a headwind for crypto)' : m.dollar_trend === 'weakening' ? 'weakening (a tailwind for crypto)' : 'stable';
+        const base = `The macro backdrop is ${m.regime_label.toLowerCase()} (${m.regime_score}/100, ${m.confidence.toLowerCase()} confidence) across ${m.symbols_used} market input${m.symbols_used === 1 ? '' : 's'}, with the US dollar ${dollar}.`;
+        const drivers = sup && cau ? ` Supportive: ${sup}. Cautionary: ${cau}.` : sup ? ` Supportive factors: ${sup}.` : cau ? ` Headwinds: ${cau}.` : '';
+        const read = m.regime_score >= 60 ? ' This is a tailwind for Bitcoin and risk assets.' : m.regime_score < 40 ? ' This is a headwind for crypto — patience and risk management are warranted.' : ' Crypto has no strong macro tailwind or headwind right now.';
+        return `${base}${drivers}${read} Macro is context, not a prediction — read it alongside BTC risk and on-chain signals.`;
+      }
+      const dollarSw = m.dollar_trend === 'strengthening' ? 'ikiimarika (kizuizi kwa crypto)' : m.dollar_trend === 'weakening' ? 'ikilegea (upepo mzuri kwa crypto)' : 'ikiwa tulivu';
+      const baseSw = `Mazingira ya macro ni ${m.regime_label.toLowerCase()} (${m.regime_score}/100, uhakika ${m.confidence.toLowerCase()}) kutoka vyanzo ${m.symbols_used} vya soko, huku dola ya Marekani ${dollarSw}.`;
+      const readSw = m.regime_score >= 60 ? ' Hii ni upepo mzuri kwa Bitcoin na mali za hatari.' : m.regime_score < 40 ? ' Hii ni kizuizi kwa crypto — subira na usimamizi wa hatari vinahitajika.' : ' Kwa sasa crypto haina upepo mzuri wala kizuizi kikubwa cha macro.';
+      return `${baseSw}${readSw} Macro ni muktadha, si utabiri — isome pamoja na hatari ya BTC na ishara za on-chain.`;
     }
 
     case 'derivatives': {

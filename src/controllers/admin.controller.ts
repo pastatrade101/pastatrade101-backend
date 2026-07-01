@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase';
-import { runFullSync, syncCoins, syncEcosystems } from '../services/sync';
+import { runFullSync, syncCoins, syncEcosystems, syncBtcAndGlobal } from '../services/sync';
+import { storeMacroRegimeDaily } from '../services/macro-regime/macroRegime.service';
 import { syncPriceSeries } from '../services/sync/sync-price-series';
 import { syncRisk } from '../services/sync/sync-risk';
 import { syncOnchain, getOnchainStatus } from '../services/sync/sync-onchain';
@@ -30,6 +31,18 @@ export const triggerFullSync = asyncHandler(async (req, res) => {
 export const triggerCoingeckoSync = asyncHandler(async (req, res) => {
   const result = await withJob('coingecko', 'coins', req.user!.sub, () => syncCoins(1));
   return sendSuccess(res, 'CoinGecko sync completed.', result);
+});
+
+// POST /api/v1/admin/sync/market  — BTC dashboard + global market snapshot (coupled)
+export const triggerMarketSync = asyncHandler(async (req, res) => {
+  const result = await withJob('coingecko', 'market', req.user!.sub, () => syncBtcAndGlobal());
+  return sendSuccess(res, 'BTC + global market sync completed.', result);
+});
+
+// POST /api/v1/admin/sync/macro-regime  — traditional-market backdrop (Twelve Data)
+export const triggerMacroSync = asyncHandler(async (req, res) => {
+  const result = await withJob('twelvedata', 'macro-regime', req.user!.sub, () => storeMacroRegimeDaily());
+  return sendSuccess(res, 'Macro regime sync completed.', result);
 });
 
 // POST /api/v1/admin/sync/defillama  — ecosystems only

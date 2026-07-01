@@ -2,6 +2,8 @@ import { Router } from 'express';
 import {
   listSyncJobs,
   triggerCoingeckoSync,
+  triggerMarketSync,
+  triggerMacroSync,
   triggerDefillamaSync,
   triggerFullSync,
   triggerPriceSeriesSync,
@@ -25,6 +27,8 @@ router.use(authenticate, adminOnly);
 router.get('/sync-jobs', listSyncJobs);
 router.post('/sync', triggerFullSync);
 router.post('/sync/coingecko', triggerCoingeckoSync);
+router.post('/sync/market', triggerMarketSync);
+router.post('/sync/macro-regime', triggerMacroSync);
 router.post('/sync/defillama', triggerDefillamaSync);
 router.post('/sync/risk', triggerRiskSync);
 router.post('/sync/onchain', triggerOnchainSync);

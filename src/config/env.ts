@@ -34,6 +34,8 @@ const envSchema = z.object({
   YOUTUBE_API_KEY: z.string().optional().or(z.literal('')),
   // SerpApi Google Trends (preferred provider). Blank → unofficial connector → none.
   SERPAPI_API_KEY: z.string().optional().or(z.literal('')),
+  // Twelve Data (macro regime: DXY / SPY / VIX / gold). Blank → module unavailable.
+  TWELVE_DATA_API_KEY: z.string().optional().or(z.literal('')),
   COINGECKO_PRO: z
     .string()
     .optional()
@@ -89,6 +91,13 @@ export const snippe = {
   baseUrl: env.SNIPPE_BASE_URL.replace(/\/+$/, ''),
   webhookUrl: `${env.PUBLIC_API_URL.replace(/\/+$/, '')}/api/v1/payments/webhook/snippe`,
   configured: Boolean(env.SNIPPE_API_KEY)
+};
+
+// Twelve Data — macro regime (traditional-market context). `configured` gates the
+// module; when blank the Macro Regime read is simply "unavailable".
+export const twelvedata = {
+  apiKey: env.TWELVE_DATA_API_KEY || '',
+  configured: Boolean(env.TWELVE_DATA_API_KEY)
 };
 
 // CoinGecko sends Demo keys to api.coingecko.com and Pro keys to pro-api.coingecko.com,

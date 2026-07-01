@@ -9,6 +9,8 @@ import { syncSocialMetrics } from './sync-social-metrics';
 import { syncOnchain } from './sync-onchain';
 import { syncRisk } from './sync-risk';
 import { storeDerivativesDaily } from '../derivatives/derivatives.service';
+import { storeMacroRegimeDaily } from '../macro-regime/macroRegime.service';
+import { storeExitStrategyDaily } from '../exit-strategy/exitStrategy.service';
 import { runEarlyOpportunitySync } from '../early-opportunity/earlyOpportunitySync.service';
 import { runAltBtcBottomSync } from '../alt-btc-bottom/altBtcBottomSync.service';
 import { withJob } from './sync-jobs';
@@ -62,6 +64,9 @@ export const runFullSync = async (triggeredBy?: string): Promise<FullSyncResult>
   };
 
   const steps: FullSyncStep[] = [];
+  // Macro regime (Twelve Data) — traditional-market context. Runs first; it has no
+  // dependency on the crypto steps and is graceful if unconfigured.
+  steps.push(await run('macro-regime', 'twelvedata', 'macro-regime', () => storeMacroRegimeDaily()));
   steps.push(await run('coins', 'coingecko', 'coins', () => syncCoins(1)));
   steps.push(
     await run('btc', 'coingecko', 'btc', async () => {
@@ -82,12 +87,28 @@ export const runFullSync = async (triggeredBy?: string): Promise<FullSyncResult>
   // Alt/BTC Bottom Radar reads the daily series (prior cycle's; price-series
   // refreshes them below). One-day lag is negligible for 365-day relative-strength.
   steps.push(await run('alt-btc-bottom', 'radar', 'alt-btc-bottom', () => runAltBtcBottomSync()));
-  // price-series is the slowest step (throttled CoinGecko loop) — run it LAST so
-  // the quick steps surface first. It refreshes the price series for next cycle.
+  // price-series is the slowest step (throttled CoinGecko loop) — run it near the
+  // end so the quick steps surface first. It refreshes the price series for next cycle.
   steps.push(await run('price-series', 'coingecko', 'price-series', () => syncPriceSeries()));
+  // Exit Strategy snapshot — derived from risk, social, derivatives, macro, cycle
+  // and altcoin breadth, so it runs LAST once every input above is fresh. This is
+  // what populates the Exit Signal card on the overview (previously admin-only).
+  steps.push(await run('exit-strategy', 'exit-strategy', 'exit-strategy', () => storeExitStrategyDaily()));
 
   const ok = steps.filter((s) => s.ok).length;
   return { steps, ok, failed: steps.length - ok };
+};
+
+/**
+ * Refresh the BTC dashboard + global market snapshot together. They're coupled —
+ * global market posture is derived from the BTC signals — so a standalone admin
+ * "market" sync runs both in order. Returns 1 when BTC signals were produced.
+ */
+export const syncBtcAndGlobal = async (): Promise<number> => {
+  const dominanceChange = await latestDominanceChange();
+  const btcSignals = await syncBtc(dominanceChange);
+  await syncGlobal(btcSignals);
+  return btcSignals ? 1 : 0;
 };
 
 export { syncCoins, syncBtc, syncGlobal, syncEcosystems };

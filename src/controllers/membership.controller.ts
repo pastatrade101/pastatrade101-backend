@@ -77,7 +77,7 @@ export const requestUpgrade = asyncHandler(async (req, res) => {
       provider: provider.name,
       event_type: 'checkout_created',
       status: 'pending',
-      event_payload: { reference: checkout.reference, plan_slug, interval, amount, currency: plan.currency }
+      event_payload: { reference: checkout.reference, plan_slug, interval, amount, currency: plan.currency, phone: phoneNumber ?? null }
     });
     // Track the attempt so admins can follow up if it's abandoned / fails.
     await supabase.from('payment_attempts').insert({
@@ -99,7 +99,7 @@ export const requestUpgrade = asyncHandler(async (req, res) => {
     provider: 'manual',
     event_type: 'upgrade_request',
     status: 'pending',
-    event_payload: { plan_slug, interval }
+    event_payload: { plan_slug, interval, phone: phone?.trim() || null }
   });
   return sendSuccess(res, `Upgrade request received for ${plan.name}. An admin will activate your subscription shortly.`, { plan_slug, status: 'pending' });
 });

@@ -6,6 +6,7 @@ import { computeAltcoinSeason } from '../altcoin-btc/altcoin-season.service';
 import { readLatestSocialRisk, type SocialLatest } from '../social/social-latest.service';
 import { getLatestLogRegression } from '../log-regression/logRegression.service';
 import { getDerivativesForExit } from '../derivatives/derivatives.service';
+import { getLatestMacroRegime } from '../macro-regime/macroRegime.service';
 import { getProfile, type ExitProfile, type LadderStep, type RiskZone } from './exitStrategySettings.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,6 +184,10 @@ export const computeExitStrategy = async (profileName?: string): Promise<ExitStr
   // Nudge cycle-extension risk by current leverage (funding/positioning). Graceful.
   if (deriv?.leverage_risk != null) cycle = cycle == null ? deriv.leverage_risk : clamp01(cycle * 0.7 + deriv.leverage_risk * 0.3);
 
+  // Macro backdrop (dollar/equities/volatility) — context for the confluence
+  // overlay below. Best-effort; the exit read is unchanged when it's unavailable.
+  const macro = await getLatestMacroRegime().catch(() => null);
+
   const social = socialLatest.score;
   const w = profile.weights;
   const categories: ExitCategory[] = [
@@ -220,7 +225,27 @@ export const computeExitStrategy = async (profileName?: string): Promise<ExitStr
       leverage_note = `Leverage is building (${drivers || 'elevated leverage'}) while ${btcRising ? 'BTC risk' : 'crowd attention'} is elevated — exit pressure raised by +${Math.round(leverageBump * 100)}.`;
     }
   }
-  const score = clamp01(baseScore + leverageBump);
+  // ── Macro confluence overlay ──
+  // A deteriorating macro backdrop (risk-off: strengthening dollar, rising
+  // volatility, falling equities) is a headwind for crypto. Like the leverage
+  // overlay it only SHARPENS an existing exit signal — it fires when macro is
+  // risk-off AND price/crowd risk already corroborates — and is bounded (+0.05)
+  // so it can never dominate or, on its own, manufacture an exit signal. It is
+  // one-directional (a supportive macro never talks the model out of caution).
+  let macroBump = 0;
+  let macro_note: string | null = null;
+  if (macro && macro.regime_score != null) {
+    const riskOff = macro.regime_score < 40;
+    const strongRiskOff = macro.regime_score < 20;
+    const corroborated = ge(risk.btc, 0.6) || ge(social, 0.6);
+    if (riskOff && corroborated) {
+      macroBump = strongRiskOff ? 0.05 : 0.03;
+      const dollarPhrase = macro.dollar_trend === 'strengthening' ? ', dollar strengthening' : '';
+      macro_note = `Macro backdrop is risk-off (${macro.regime_label}${dollarPhrase}) while ${ge(risk.btc, 0.6) ? 'BTC risk' : 'crowd attention'} is elevated — a macro headwind that raises exit pressure by +${Math.round(macroBump * 100)}.`;
+    }
+  }
+
+  const score = clamp01(baseScore + leverageBump + macroBump);
   const pct = Math.round(score * 100);
 
   const zone = zoneFor(profile.risk_zones, score);
@@ -286,6 +311,7 @@ export const computeExitStrategy = async (profileName?: string): Promise<ExitStr
   if (lt(so, 0.4) && lt(btc, 0.4) && lt(oc, 0.4)) conflicts.push('The market is not crowded. Exit pressure is limited.');
   if ([btc, oc, so, alt].every((x) => ge(x, 0.6))) conflicts.push('Multiple risk categories are elevated together. Scale-out pressure is high.');
   if (leverage_note) conflicts.push(leverage_note);
+  if (macro_note) conflicts.push(macro_note);
 
   // ── Confirmation needed for bigger exits ──
   const confirmation_needed: string[] = [];

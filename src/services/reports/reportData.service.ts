@@ -128,6 +128,16 @@ export interface ReportSnapshot {
     btc: { price: number; fit_price: number; zone_label: string; distance_from_fit_percent: number; risk_score: number; bubble_lower_band: number; lower_band: number } | null;
     eth: { price: number; fit_price: number; zone_label: string; distance_from_fit_percent: number; risk_score: number; bubble_lower_band: number; lower_band: number } | null;
   } | null;
+  macro_regime: {
+    regime_score: number;
+    regime_label: string;
+    dollar_trend: string;
+    confidence: string;
+    symbols_used: number;
+    interpretation: string;
+    supportive: string[];
+    cautionary: string[];
+  } | null;
   derivatives: {
     leverage_risk: number;
     leverage_percent: number;
@@ -484,6 +494,27 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     return { btc, eth };
   };
 
+  const buildMacroRegime = async (): Promise<ReportSnapshot['macro_regime']> => {
+    const { data } = await supabase
+      .from('macro_regime_daily')
+      .select('regime_score, regime_label, dollar_trend, confidence, symbols_used, components, interpretation')
+      .order('date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!data || data.regime_score == null) return null;
+    const comps = Array.isArray(data.components) ? (data.components as Array<{ driver?: string; tone?: string }>) : [];
+    return {
+      regime_score: Number(data.regime_score),
+      regime_label: (data.regime_label as string) ?? 'Neutral / mixed',
+      dollar_trend: (data.dollar_trend as string) ?? 'unknown',
+      confidence: (data.confidence as string) ?? 'Medium',
+      symbols_used: Number(data.symbols_used ?? 0),
+      interpretation: (data.interpretation as string) ?? '',
+      supportive: comps.filter((c) => c.tone === 'good').map((c) => c.driver ?? '').filter(Boolean),
+      cautionary: comps.filter((c) => c.tone === 'warn').map((c) => c.driver ?? '').filter(Boolean)
+    };
+  };
+
   const buildDerivatives = async (): Promise<ReportSnapshot['derivatives']> => {
     const { data } = await supabase
       .from('derivatives_daily')
@@ -531,7 +562,7 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     return { text_en: s.text_en, text_sw: s.text_sw, top_networks: s.top_networks, high_attention: s.high_attention };
   };
 
-  const [risk, cycle, onchain, social, altcoin, ecosystem, exit, logreg, derivatives, alt_btc_bottom, early_opportunity] = await Promise.all([
+  const [risk, cycle, onchain, social, altcoin, ecosystem, exit, logreg, derivatives, alt_btc_bottom, early_opportunity, macro_regime] = await Promise.all([
     guard('btc_risk', () => buildRisk(lookback)),
     guard('btc_cycle', () => buildCycle()),
     guard('onchain', () => buildOnchain(lookback)),
@@ -542,7 +573,8 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     guard('log_regression', () => buildLogReg()),
     guard('derivatives', () => buildDerivatives()),
     guard('alt_btc_bottom', () => buildAltBtcBottom()),
-    guard('early_opportunity', () => buildEarlyOpportunity())
+    guard('early_opportunity', () => buildEarlyOpportunity()),
+    guard('macro_regime', () => buildMacroRegime())
   ]);
   availability.watchlist = 'unavailable'; // per-user, not part of the global snapshot
   availability.sectors = 'unavailable'; // module not implemented yet
@@ -558,6 +590,7 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
     ecosystem,
     exit,
     logreg,
+    macro_regime,
     derivatives,
     alt_btc_bottom,
     early_opportunity,

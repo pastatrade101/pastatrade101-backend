@@ -71,10 +71,17 @@ const exitSignal = (row: Record<string, unknown> | null): Signal => {
   return { key: 'exit_strategy', name: 'Exit Signal', label, value: pctv, meaning, tone, link: '/app/exit-strategy' };
 };
 
-interface EcoRow { name: string; signal: string | null; metrics: { strength_score?: number } | null }
+interface EcoMetrics { strength_score?: number | null; signal?: string | null }
+// PostgREST embeds the 1:1 ecosystem_metrics row as an array — normalise to one.
+interface EcoRow { name: string; metrics: EcoMetrics | EcoMetrics[] | null }
+const ecoMetricsOf = (e: EcoRow): EcoMetrics | null => (Array.isArray(e.metrics) ? (e.metrics[0] ?? null) : e.metrics);
+const ecoStrength = (e: EcoRow): number => ecoMetricsOf(e)?.strength_score ?? 0;
 const ecosystemSignal = (ecos: EcoRow[]): Signal => {
   if (!ecos.length) return { key: 'ecosystem_rotation', name: 'Ecosystem Rotation', label: 'Unavailable', value: null, meaning: 'Ecosystem rankings are unavailable.', tone: 'na', link: '/app/ecosystems' };
-  const improving = ecos.filter((e) => /improv|strength|expand|inflow|rising/i.test(e.signal ?? '') || (e.metrics?.strength_score ?? 0) >= 60).length;
+  const improving = ecos.filter((e) => {
+    const m = ecoMetricsOf(e);
+    return /improv|strength|expand|inflow|rising/i.test(m?.signal ?? '') || (m?.strength_score ?? 0) >= 60;
+  }).length;
   const total = ecos.length;
   const ratio = improving / total;
   const v = `${improving}/${total} improving`;
@@ -96,6 +103,14 @@ const derivativesSignal = (row: { leverage_risk: number | null; label: string | 
   return { key: 'derivatives', name: 'Leverage Risk', label: row.label ?? '', value: `${Math.round(s * 100)}/100`, meaning, tone, link: '/app/derivatives' };
 };
 
+const macroRegimeSignal = (row: { regime_score: number | null; regime_label: string | null } | null): Signal => {
+  if (!row || row.regime_score == null) return { key: 'macro_regime', name: 'Macro Regime', label: 'Unavailable', value: null, meaning: 'Run a macro sync (needs a Twelve Data key).', tone: 'na', link: '/app/macro-regime' };
+  const s = Number(row.regime_score);
+  const tone = s >= 60 ? 'good' : s >= 40 ? 'neutral' : 'warn';
+  const meaning = s >= 60 ? 'Traditional markets are risk-on — a tailwind for crypto.' : s >= 40 ? 'Mixed macro backdrop — no strong tailwind or headwind.' : 'Traditional markets are risk-off — a headwind for crypto.';
+  return { key: 'macro_regime', name: 'Macro Regime', label: row.regime_label ?? '', value: `${Math.round(s)}/100`, meaning, tone, link: '/app/macro-regime' };
+};
+
 export interface OverviewOptions {
   universe?: Universe;
   isPaid?: boolean;
@@ -105,17 +120,18 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
   const universe: Universe = opts.universe ?? 'clean';
   const isPaid = opts.isPaid ?? true;
 
-  const [{ data: globals }, { data: riskRow }, { data: exitRows }, social, { data: logregRow }, { data: ecos }, { data: coins }, { data: report }, { data: jobs }, { data: derivRow }] = await Promise.all([
+  const [{ data: globals }, { data: riskRow }, { data: exitRows }, social, { data: logregRow }, { data: ecos }, { data: coins }, { data: report }, { data: jobs }, { data: derivRow }, { data: macroRow }] = await Promise.all([
     supabase.from('global_market_snapshots').select('*').order('captured_at', { ascending: false }).limit(2),
     supabase.from('risk_summary_daily').select('snapshot_date, summary_risk').order('snapshot_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('exit_strategy_daily').select('date, exit_risk_score, exit_risk_percent, strategy_label, confidence').order('date', { ascending: false }).limit(2),
     readLatestSocialRisk(),
     supabase.from('asset_log_regression_bands').select('date, zone_label, risk_score, distance_from_fit_percent').eq('asset_symbol', 'BTC').order('date', { ascending: false }).limit(1).maybeSingle(),
-    supabase.from('ecosystems').select('name, signal, metrics').eq('is_active', true),
+    supabase.from('ecosystems').select('name, metrics:ecosystem_metrics(strength_score, signal)').eq('is_active', true),
     supabase.from('coins').select('coingecko_id, symbol, name, image_url, current_price, price_change_pct_24h, market_cap_rank, total_volume').lte('market_cap_rank', 150).not('price_change_pct_24h', 'is', null).order('market_cap_rank', { ascending: true }),
     supabase.from('reports').select('title, slug, report_type, market_status, premium_takeaway, published_at').eq('status', 'published').order('published_at', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('sync_jobs').select('source, job_type, status, finished_at').order('finished_at', { ascending: false }).limit(40),
-    supabase.from('derivatives_daily').select('leverage_risk, label').order('date', { ascending: false }).limit(1).maybeSingle()
+    supabase.from('derivatives_daily').select('leverage_risk, label').order('date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('macro_regime_daily').select('regime_score, regime_label').order('date', { ascending: false }).limit(1).maybeSingle()
   ]);
 
   const global = globals?.[0];
@@ -155,7 +171,8 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
     exit_strategy: exitSignal(exitRow),
     ecosystem_rotation: ecosystemSignal((ecos ?? []) as EcoRow[]),
     stablecoin_liquidity: liquiditySignal(global.stablecoin_market_cap),
-    derivatives: derivativesSignal(derivRow as { leverage_risk: number | null; label: string | null } | null)
+    derivatives: derivativesSignal(derivRow as { leverage_risk: number | null; label: string | null } | null),
+    macro_regime: macroRegimeSignal(macroRow as { regime_score: number | null; regime_label: string | null } | null)
   };
 
   // ── Market posture ──
@@ -180,7 +197,7 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
   }
 
   // ── Strongest signal today ──
-  const ecoImproving = ((ecos ?? []) as EcoRow[]).filter((e) => (e.metrics?.strength_score ?? 0) >= 65).sort((a, b) => (b.metrics?.strength_score ?? 0) - (a.metrics?.strength_score ?? 0))[0];
+  const ecoImproving = ((ecos ?? []) as EcoRow[]).filter((e) => ecoStrength(e) >= 65).sort((a, b) => ecoStrength(b) - ecoStrength(a))[0];
   const topGainer = top_gainers[0];
   let strongest: string;
   if (ecoImproving) strongest = `${ecoImproving.name} ecosystem is improving while most ecosystems remain neutral or weak.`;
@@ -249,6 +266,7 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
     exit_strategy: !!exitRow,
     log_regression: !!logregRow,
     derivatives: !!derivRow,
+    macro_regime: !!macroRow,
     report: !!report
   };
   const missing = Object.entries(coverage)
