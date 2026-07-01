@@ -47,6 +47,8 @@ const dataRow = (p: IcoRawProject, source: string): Record<string, any> => {
     whitepaper_url: p.whitepaper_url,
     tokenomics: p.tokenomics,
     vesting: p.vesting,
+    rounds: p.rounds,
+    source_rank: p.rank,
     score: s.score,
     classification: s.classification,
     score_components: s.components,
@@ -99,7 +101,7 @@ export const storeIcoProjects = async (raws: IcoRawProject[], source = 'icodrops
 };
 
 // ── Reads ──
-const PUBLIC_FIELDS = 'id, project_name, token_symbol, image_url, category, description, sale_status, sale_type, sale_date, raise_amount, raise_amount_text, backers, social_links, website, whitepaper_url, tokenomics, vesting, score, classification, score_components, red_flags, source, source_url, last_checked_at';
+const PUBLIC_FIELDS = 'id, project_name, token_symbol, image_url, category, description, sale_status, sale_type, sale_date, raise_amount, raise_amount_text, backers, social_links, website, whitepaper_url, tokenomics, vesting, rounds, source_rank, score, classification, score_components, red_flags, source, source_url, last_checked_at';
 
 export interface IcoListFilters {
   status?: string; // sale status

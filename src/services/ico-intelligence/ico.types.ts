@@ -21,7 +21,18 @@ export interface IcoRawProject {
   description: string | null;
   tokenomics: Record<string, unknown>;
   vesting: Record<string, unknown>;
+  rounds: IcoRound[];
+  rank: number | null;
   source_url: string | null;
+}
+
+// One funding/sale round (e.g. Seed, ICM on Legion, Token Sale).
+export interface IcoRound {
+  name: string;
+  type: string | null; // Private, ICM, Token Launch, …
+  status: string | null; // "Active" when live
+  when: string | null; // "1 Days left" or "Q1, 2023"
+  amount: string | null; // "$3,500,000"
 }
 
 export interface IcoCollectResult {

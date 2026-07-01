@@ -158,6 +158,8 @@ const normalizeApiRecord = (r: any, fallbackStatus: SaleStatus): IcoRawProject |
     description: r?.description ?? r?.about ?? null,
     tokenomics: r?.tokenomics ?? {},
     vesting: r?.vesting ?? r?.unlock ?? {},
+    rounds: [],
+    rank: r?.rank ?? null,
     source_url: r?.source_url ?? r?.link ?? (r?.slug ? `${icodrops.baseUrl}/${r.slug}/` : null)
   };
 };
@@ -229,6 +231,8 @@ export const collectIcoProjects = async (): Promise<IcoCollectResult> => {
     if (!dhtml) continue;
     const d = parseDetailHtml(dhtml);
     if (d.backers?.length) p.backers = d.backers;
+    if (d.rounds?.length) p.rounds = d.rounds;
+    if (d.rank != null) p.rank = d.rank;
     if (!p.image_url && d.image_url) p.image_url = d.image_url;
     if (!p.category && d.category) p.category = d.category;
     if (d.website) p.website = d.website;
@@ -284,6 +288,8 @@ export const parseListingHtml = (html: string): IcoRawProject[] => {
         description: null,
         tokenomics: {},
         vesting: {},
+        rounds: [],
+        rank: null,
         source_url
       });
     });
@@ -323,6 +329,8 @@ export const parseCategoryHtml = (html: string, status: SaleStatus): IcoRawProje
       description: null,
       tokenomics: {},
       vesting: {},
+      rounds: [],
+      rank: null,
       source_url
     });
   });
@@ -367,9 +375,34 @@ export const parseDetailHtml = (html: string): Partial<IcoRawProject> => {
   // Vesting only when a real vesting/unlock section exists (avoids capturing noise).
   const vestRaw = $('[class*="Distribution"], [class*="Vesting"], [class*="Unlock"]').first().text().replace(/\s+/g, ' ').trim();
   const hasVesting = /vest|unlock|cliff|tge|lockup|lock-up/i.test(vestRaw);
+  // Rounds timeline (Seed / ICM / Token Sale …) with type, active status, date, amount.
+  const t = (el: ReturnType<typeof $>, sel: string) => el.find(sel).first().text().replace(/\s+/g, ' ').trim();
+  const rounds = $('.PPT-Rounds__item')
+    .map((_, it) => {
+      const el = $(it);
+      const name = t(el, '.PPT-Rounds__round-name');
+      if (!name) return null;
+      return {
+        name,
+        type: t(el, '.PPT-Rounds__round-type') || null,
+        status: t(el, '.PPT-Rounds__active-title') || null,
+        when: t(el, '.PPT-Rounds__active-date') || t(el, '.Round-Date__date') || null,
+        amount: t(el, '.Round-Date__status') || null
+      };
+    })
+    .get()
+    .filter((r): r is NonNullable<typeof r> => r != null);
+  // Rank + category from the "#151 in Blockchain Service" tag. The body text is
+  // flattened, so trim trailing UI labels that bleed in after the category.
+  const rankM = text.match(/#(\d+)\s+in\s+([A-Za-z0-9 /&.-]{2,40})/);
+  const category = rankM ? rankM[2].replace(/\s+(Tags|Website|Whitepaper|Dropstab|Docs|Rounds|Investors|Link|Platform|Raised)\b.*$/i, '').trim() : undefined;
+
   const ogImage = $('meta[property="og:image"]').attr('content')?.trim();
   return {
     backers,
+    rounds: rounds.length ? rounds : undefined,
+    rank: rankM ? Number(rankM[1]) : undefined,
+    category: category || undefined,
     image_url: ogImage && !/\.svg(\?|$)/i.test(ogImage) ? ogImage : undefined,
     website,
     whitepaper_url: whitepaper,

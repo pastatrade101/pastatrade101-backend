@@ -128,6 +128,8 @@ const normalize = (d: any): IcoRawProject | null => {
     description: stripHtml(d.description),
     tokenomics,
     vesting: {}, // vesting not available on the free plan
+    rounds: [], // funding rounds are paywalled on the free plan
+    rank: typeof d.rank === 'number' ? d.rank : null,
     source_url: d.slug ? `https://cryptorank.io/price/${d.slug}` : null
   };
 };
