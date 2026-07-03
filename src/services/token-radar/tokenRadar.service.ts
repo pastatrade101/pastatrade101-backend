@@ -149,10 +149,11 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
     buys_24h: pair.txns?.h24?.buys ?? null, sells_24h: pair.txns?.h24?.sells ?? null
   };
 
-  // Holder truth + contract risk + market regime + exchange listings in parallel.
-  const [holder, security, market, exchanges] = await Promise.all([
-    getHolderData(chain, address, { liquidityUsd: dex.liquidity_usd, marketCap: dex.market_cap }),
-    tokenSecurityDetail(chain.goplusNetwork ?? chain.slug, address).catch(() => null),
+  // Contract risk first (GoPlus) — reused as the free holder baseline so we don't
+  // call GoPlus twice, and holder escalation (Moralis) only fires when needed.
+  const security = await tokenSecurityDetail(chain.goplusNetwork ?? chain.slug, address).catch(() => null);
+  const [holder, market, exchanges] = await Promise.all([
+    getHolderData(chain, address, { liquidityUsd: dex.liquidity_usd, marketCap: dex.market_cap }, security),
     marketContext(),
     getExchangeListings(chain, address).catch(() => null)
   ]);
