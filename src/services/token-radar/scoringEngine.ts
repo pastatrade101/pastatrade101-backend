@@ -57,6 +57,7 @@ export interface AnalysisInput {
   age_days: number | null;
   market: MarketContext;
   input_type: 'address' | 'ticker';
+  listing_strength?: number | null; // 0–100 exchange-listing strength (confidence only)
 }
 
 export interface Scores {
@@ -342,6 +343,9 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
   if (i.age_days != null && i.age_days < 7) qualC -= 10;
   if (i.input_type === 'ticker') qualC -= 8;
   if (!Object.values(i.market).some((v) => v != null)) qualC -= 5;
+  // Exchange-listing strength nudges CONFIDENCE only — it can't rescue a token
+  // with severe risk or dead volume (those are handled by the overrides above).
+  if (i.listing_strength != null) qualC += Math.max(-6, Math.min(8, Math.round((i.listing_strength - 40) * 0.15)));
   qualC = clamp(qualC, 5, 98);
 
   const combined = clamp(availC * 0.45 + qualC * 0.55);

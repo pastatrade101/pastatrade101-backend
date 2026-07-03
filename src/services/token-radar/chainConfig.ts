@@ -14,16 +14,17 @@ export interface ChainConfig {
   explorerUrl: string; // token page prefix
   dexscreenerId: string; // DexScreener chainId value
   goplusNetwork: string | null; // network key understood by goplus.client (null = no risk data)
+  coingeckoPlatform: string | null; // CoinGecko asset-platform id for /contract lookups
 }
 
 export const CHAINS: Record<ChainSlug, ChainConfig> = {
-  ethereum: { slug: 'ethereum', name: 'Ethereum', chainId: 1, nativeCurrency: 'ETH', addressKind: 'evm', explorerUrl: 'https://etherscan.io/token/', dexscreenerId: 'ethereum', goplusNetwork: 'ethereum' },
-  bsc: { slug: 'bsc', name: 'BNB Chain', chainId: 56, nativeCurrency: 'BNB', addressKind: 'evm', explorerUrl: 'https://bscscan.com/token/', dexscreenerId: 'bsc', goplusNetwork: 'bsc' },
-  solana: { slug: 'solana', name: 'Solana', chainId: null, nativeCurrency: 'SOL', addressKind: 'solana', explorerUrl: 'https://solscan.io/token/', dexscreenerId: 'solana', goplusNetwork: 'solana' },
-  base: { slug: 'base', name: 'Base', chainId: 8453, nativeCurrency: 'ETH', addressKind: 'evm', explorerUrl: 'https://basescan.org/token/', dexscreenerId: 'base', goplusNetwork: 'base' },
-  arbitrum: { slug: 'arbitrum', name: 'Arbitrum', chainId: 42161, nativeCurrency: 'ETH', addressKind: 'evm', explorerUrl: 'https://arbiscan.io/token/', dexscreenerId: 'arbitrum', goplusNetwork: 'arbitrum' },
-  polygon: { slug: 'polygon', name: 'Polygon', chainId: 137, nativeCurrency: 'POL', addressKind: 'evm', explorerUrl: 'https://polygonscan.com/token/', dexscreenerId: 'polygon', goplusNetwork: 'polygon' },
-  avalanche: { slug: 'avalanche', name: 'Avalanche', chainId: 43114, nativeCurrency: 'AVAX', addressKind: 'evm', explorerUrl: 'https://snowtrace.io/token/', dexscreenerId: 'avalanche', goplusNetwork: 'avalanche' }
+  ethereum: { slug: 'ethereum', name: 'Ethereum', chainId: 1, nativeCurrency: 'ETH', addressKind: 'evm', explorerUrl: 'https://etherscan.io/token/', dexscreenerId: 'ethereum', goplusNetwork: 'ethereum', coingeckoPlatform: 'ethereum' },
+  bsc: { slug: 'bsc', name: 'BNB Chain', chainId: 56, nativeCurrency: 'BNB', addressKind: 'evm', explorerUrl: 'https://bscscan.com/token/', dexscreenerId: 'bsc', goplusNetwork: 'bsc', coingeckoPlatform: 'binance-smart-chain' },
+  solana: { slug: 'solana', name: 'Solana', chainId: null, nativeCurrency: 'SOL', addressKind: 'solana', explorerUrl: 'https://solscan.io/token/', dexscreenerId: 'solana', goplusNetwork: 'solana', coingeckoPlatform: 'solana' },
+  base: { slug: 'base', name: 'Base', chainId: 8453, nativeCurrency: 'ETH', addressKind: 'evm', explorerUrl: 'https://basescan.org/token/', dexscreenerId: 'base', goplusNetwork: 'base', coingeckoPlatform: 'base' },
+  arbitrum: { slug: 'arbitrum', name: 'Arbitrum', chainId: 42161, nativeCurrency: 'ETH', addressKind: 'evm', explorerUrl: 'https://arbiscan.io/token/', dexscreenerId: 'arbitrum', goplusNetwork: 'arbitrum', coingeckoPlatform: 'arbitrum-one' },
+  polygon: { slug: 'polygon', name: 'Polygon', chainId: 137, nativeCurrency: 'POL', addressKind: 'evm', explorerUrl: 'https://polygonscan.com/token/', dexscreenerId: 'polygon', goplusNetwork: 'polygon', coingeckoPlatform: 'polygon-pos' },
+  avalanche: { slug: 'avalanche', name: 'Avalanche', chainId: 43114, nativeCurrency: 'AVAX', addressKind: 'evm', explorerUrl: 'https://snowtrace.io/token/', dexscreenerId: 'avalanche', goplusNetwork: 'avalanche', coingeckoPlatform: 'avalanche' }
 };
 
 export const chainOf = (slug: string): ChainConfig | null => (CHAINS as Record<string, ChainConfig>)[slug?.toLowerCase()] ?? null;

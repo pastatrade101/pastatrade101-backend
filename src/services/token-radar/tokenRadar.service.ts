@@ -6,6 +6,7 @@ import { computeAltcoinSeason } from '../altcoin-btc/altcoin-season.service';
 import { chainOf, type ChainConfig } from './chainConfig';
 import { resolveToken, type ResolveResult } from './tokenResolver';
 import { getHolderData } from './holderData.service';
+import { getExchangeListings, type ExchangeListingSummary } from './exchangeListing.service';
 import { computeAnalysis, type MarketContext, type MarketData, type RiskWarning, type Rating, type Scores } from './scoringEngine';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,6 +40,7 @@ export interface TokenReport {
   warnings: RiskWarning[];
   data_quality_warnings: string[];
   timing_view: string;
+  exchanges: ExchangeListingSummary | null;
   disclaimer: string;
   created_at?: string;
 }
@@ -114,7 +116,7 @@ const rowToReport = (row: any, chain: ChainConfig, cached: boolean): TokenReport
     confidence: { data_availability: row.data_availability_confidence ?? row.confidence_score ?? 0, analysis_quality: row.analysis_quality_confidence ?? row.confidence_score ?? 0, combined: row.confidence_score ?? 0, note: raw.confidence_note ?? '' },
     rating: row.final_rating, rating_explanation: row.rating_explanation ?? '', action_label: row.action_label,
     summary: row.summary, positives: row.positives ?? [], warnings: row.warnings ?? [], data_quality_warnings: row.data_quality_warnings ?? [],
-    timing_view: row.timing_view ?? '', disclaimer: DISCLAIMER, created_at: row.created_at
+    timing_view: row.timing_view ?? '', exchanges: raw.exchanges ?? null, disclaimer: DISCLAIMER, created_at: row.created_at
   };
 };
 
@@ -147,16 +149,19 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
     buys_24h: pair.txns?.h24?.buys ?? null, sells_24h: pair.txns?.h24?.sells ?? null
   };
 
-  // Holder truth + contract risk + market regime in parallel (each graceful).
-  const [holder, security, market] = await Promise.all([
+  // Holder truth + contract risk + market regime + exchange listings in parallel.
+  const [holder, security, market, exchanges] = await Promise.all([
     getHolderData(chain, address, { liquidityUsd: dex.liquidity_usd, marketCap: dex.market_cap }),
     tokenSecurityDetail(chain.goplusNetwork ?? chain.slug, address).catch(() => null),
-    marketContext()
+    marketContext(),
+    getExchangeListings(chain, address).catch(() => null)
   ]);
 
   const age_days = pair.pairCreatedAt ? Math.max(0, Math.floor((Date.now() - pair.pairCreatedAt) / 86_400_000)) : null;
-  const a = computeAnalysis({ dex, holder, security, age_days, market, input_type: resolved.input_type });
+  const a = computeAnalysis({ dex, holder, security, age_days, market, input_type: resolved.input_type, listing_strength: exchanges?.listingStrengthScore ?? null });
 
+  // Listing warnings fold into the data-quality list (deduped).
+  const data_quality_warnings = [...new Set([...a.data_quality_warnings, ...(exchanges?.warnings ?? [])])];
   const liqOk = (dex.liquidity_usd ?? 0) >= 50_000;
   const summary = buildSummary(a.rating, a.warnings, a.holder_meta.verified, holder.holders, liqOk);
   const timing_view = timingView(a.scores.timing);
@@ -171,11 +176,11 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
     confidence_score: a.confidence.combined, data_availability_confidence: a.confidence.data_availability, analysis_quality_confidence: a.confidence.analysis_quality,
     holder_source: a.holder_meta.source, holder_confidence: a.holder_meta.confidence, holder_verified: a.holder_meta.verified,
     final_rating: a.rating, rating_explanation: a.rating_explanation, action_label: a.action_label, summary,
-    positives: a.positives, warnings: a.warnings, data_quality_warnings: a.data_quality_warnings, timing_view,
+    positives: a.positives, warnings: a.warnings, data_quality_warnings, timing_view,
     raw_data: {
       pair_url: pair.url, dex: pair.dexId, confidence_note: a.confidence.note,
       holder_weight: a.holder_meta.weight_used, holder_used_in_final: a.holder_meta.used_in_final_score, holder_warning: a.holder_meta.warning,
-      security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
+      exchanges, security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
     }
   };
   const { data: saved, error } = await supabase.from('token_analysis_reports').insert(row).select('*').maybeSingle();
