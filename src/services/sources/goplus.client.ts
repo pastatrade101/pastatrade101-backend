@@ -17,7 +17,20 @@ const EVM_CHAIN: Record<string, string> = {
   optimism: '10',
   avax: '43114',
   avalanche: '43114',
-  base: '8453'
+  base: '8453',
+  // Token Radar expanded networks (GoPlus-supported EVM chains).
+  fantom: '250',
+  sonic: '146',
+  cronos: '25',
+  linea: '59144',
+  mantle: '5000',
+  blast: '81457',
+  scroll: '534352',
+  zksync: '324',
+  celo: '42220',
+  gnosis: '100',
+  moonbeam: '1284',
+  pulsechain: '369'
 };
 
 export interface TokenSecurity {

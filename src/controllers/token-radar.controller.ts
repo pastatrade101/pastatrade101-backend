@@ -14,7 +14,7 @@ export const getChainsCtrl = asyncHandler(async (req, res) => {
   const limit = limitFor(access, 'max_token_scans_daily');
   const used = limit === null ? 0 : await scansToday(req.user!.sub);
   return sendSuccess(res, 'Chains loaded.', {
-    chains: Object.values(CHAINS).map((c) => ({ slug: c.slug, name: c.name, native: c.nativeCurrency })),
+    chains: Object.values(CHAINS).map((c) => ({ slug: c.slug, name: c.name, native: c.nativeCurrency, type: c.type, status: c.status, popular: !!c.popular })),
     allowance: { limit, used, remaining: limit === null ? null : Math.max(0, limit - used) }
   });
 });
@@ -25,7 +25,7 @@ export const analyzeCtrl = asyncHandler(async (req, res) => {
   const input = String(req.body?.input ?? '').trim();
   const fresh = req.body?.fresh === true;
   if (!chain) throw new AppError('Please select a network.', 400);
-  if (!chainOf(chain)) throw new AppError('Unsupported network.', 400);
+  if (chain !== 'auto' && !chainOf(chain)) throw new AppError('Unsupported network.', 400);
   if (!input) throw new AppError('Please enter a token address or ticker.', 400);
 
   const userId = req.user!.sub;
@@ -43,6 +43,9 @@ export const analyzeCtrl = asyncHandler(async (req, res) => {
   if (outcome.status === 'error') return sendSuccess(res, 'Token not found.', { status: 'error', message: outcome.message });
   if (outcome.status === 'matches') {
     return sendSuccess(res, 'Multiple tokens matched — pick the exact one.', { status: 'matches', matches: outcome.matches, disclaimer: DISCLAIMER });
+  }
+  if (outcome.status === 'chains') {
+    return sendSuccess(res, 'This address exists on multiple networks — pick one.', { status: 'chains', options: outcome.options });
   }
   return sendSuccess(res, 'Analysis completed.', { status: 'completed', report: outcome.report });
 });

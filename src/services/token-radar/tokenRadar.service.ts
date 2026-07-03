@@ -3,7 +3,8 @@ import { AppError } from '../../utils/api-response';
 import { tokenSecurityDetail } from '../sources/goplus.client';
 import { getLatestMacroRegime } from '../macro-regime/macroRegime.service';
 import { computeAltcoinSeason } from '../altcoin-btc/altcoin-season.service';
-import { chainOf, type ChainConfig } from './chainConfig';
+import { CHAINS, chainOf, looksLikeAddress, type ChainConfig } from './chainConfig';
+import { pairsForToken } from '../sources/dexscreener.client';
 import { resolveToken, type ResolveResult } from './tokenResolver';
 import { getHolderData } from './holderData.service';
 import { getExchangeListings, type ExchangeListingSummary } from './exchangeListing.service';
@@ -120,14 +121,47 @@ const rowToReport = (row: any, chain: ChainConfig, cached: boolean): TokenReport
   };
 };
 
+export interface ChainOption { slug: string; name: string; liquidity_usd: number }
+
 export type AnalyzeOutcome =
   | { status: 'completed'; report: TokenReport }
   | { status: 'matches'; matches: Extract<ResolveResult, { kind: 'matches' }>['matches'] }
+  | { status: 'chains'; options: ChainOption[] }
   | { status: 'error'; message: string };
 
+/**
+ * Auto-detect which chain(s) an address lives on. One DexScreener call returns
+ * pairs across ALL chains — we map their chainIds back to configured networks.
+ */
+export const detectChainsForAddress = async (address: string): Promise<ChainOption[]> => {
+  const pairs = await pairsForToken(address);
+  const bySlug = new Map<string, number>();
+  for (const chain of Object.values(CHAINS)) {
+    if (!chain.dexscreenerId || chain.status === 'coming_soon') continue;
+    const liq = pairs.filter((p) => p.chainId === chain.dexscreenerId).reduce((m, p) => Math.max(m, p.liquidity?.usd ?? 0), 0);
+    if (pairs.some((p) => p.chainId === chain.dexscreenerId)) bySlug.set(chain.slug, liq);
+  }
+  return [...bySlug.entries()]
+    .map(([slug, liquidity_usd]) => ({ slug, name: CHAINS[slug].name, liquidity_usd }))
+    .sort((a, b) => b.liquidity_usd - a.liquidity_usd);
+};
+
 export const analyzeToken = async (chainSlug: string, input: string, userId: string, fresh = false, ensureQuota?: () => Promise<void>): Promise<AnalyzeOutcome> => {
-  const chain = chainOf(chainSlug);
+  // ── Auto-detect: no chain selected, address pasted → find its chain(s). ──
+  let resolvedSlug = chainSlug;
+  if (chainSlug === 'auto') {
+    if (!looksLikeAddress(input)) {
+      return { status: 'error', message: 'Auto-detect works with contract addresses. For a ticker search, select a network first.' };
+    }
+    const options = await detectChainsForAddress(input.trim());
+    if (!options.length) return { status: 'error', message: 'No DEX market found for this address on any supported network.' };
+    if (options.length > 1) return { status: 'chains', options };
+    resolvedSlug = options[0].slug;
+  }
+
+  const chain = chainOf(resolvedSlug);
   if (!chain) throw new AppError('Unsupported network. Pick one of the supported chains.', 400);
+  if (chain.status === 'coming_soon') throw new AppError(`${chain.name} support is coming soon — it can't be analyzed yet.`, 400);
 
   const resolved = await resolveToken(chain, input);
   if (resolved.kind === 'error') return { status: 'error', message: resolved.message };

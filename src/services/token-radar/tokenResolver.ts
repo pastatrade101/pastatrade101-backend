@@ -37,6 +37,11 @@ const toMatch = (p: DsPair): TokenMatch => ({
 export const resolveToken = async (chain: ChainConfig, rawInput: string): Promise<ResolveResult> => {
   const input = rawInput.trim();
 
+  // Chains without a DexScreener slug can't be analyzed yet (coming_soon).
+  if (!chain.dexscreenerId) {
+    return { kind: 'error', code: 'not-found', message: `${chain.name} does not have DEX market data support yet — this network is coming soon.` };
+  }
+
   // ── Address path (preferred) ──
   if (looksLikeAddress(input)) {
     if (!isValidAddress(chain, input)) {

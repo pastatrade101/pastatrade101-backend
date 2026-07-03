@@ -50,7 +50,7 @@ const num = (v: unknown): number | null => {
 // ── High-confidence COUNT providers (key-gated; count only, concentration from GoPlus) ──
 const moralisCount = async (chain: ChainConfig, address: string): Promise<{ holders: number; source: HolderDataSource } | null> => {
   const k = key('MORALIS_API_KEY');
-  if (!k || chain.addressKind !== 'evm' || chain.chainId == null) return null;
+  if (!k || chain.type !== 'evm' || chain.chainId == null) return null;
   const hex = `0x${chain.chainId.toString(16)}`;
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -108,7 +108,7 @@ export const getHolderData = async (
   // Escalate to a verified COUNT only when it can change the outcome — GoPlus
   // count missing, very low, or low-but-inside-a-large-market (likely incomplete).
   const suspicious = !gp || gp.holders == null || gp.holders < 500 || (gp.holders < 100 && bigMarket);
-  if (suspicious && chain.addressKind === 'evm') {
+  if (suspicious && chain.type === 'evm') {
     const verified = (await moralisCount(chain, address)) ?? (await covalentCount(chain, address));
     if (verified) {
       return {
