@@ -27,6 +27,7 @@ export interface ExchangeListing {
   trustScore?: ListingTrust;
   source: ListingSource;
   url?: string;
+  logoUrl?: string; // exchange logo (DexScreener dex icon / CoinGecko market logo)
 }
 
 export type ListingStrengthLabel =
@@ -68,7 +69,8 @@ const fromDexscreener = (pairs: DsPair[], chain: ChainConfig): ExchangeListing[]
       volume24h: p.volume?.h24 ?? null,
       liquidityUsd: p.liquidity?.usd ?? null,
       source: 'dexscreener' as const,
-      url: p.url
+      url: p.url,
+      logoUrl: p.dexId ? `https://dd.dexscreener.com/ds-data/dexes/${p.dexId}.png` : undefined
     }));
 
 // ── CoinGecko: resolve coin id by contract, then tickers ──
@@ -92,7 +94,7 @@ const fromCoingecko = async (chain: ChainConfig, address: string): Promise<Excha
   const id = coin?.id;
   if (!id) return [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const t = await cgGet<{ tickers: any[] }>(`/coins/${id}/tickers?depth=false`);
+  const t = await cgGet<{ tickers: any[] }>(`/coins/${id}/tickers?depth=false&include_exchange_logo=true`);
   const tickers = t?.tickers ?? [];
   return tickers.slice(0, 50).map((tk) => {
     const marketName = tk?.market?.name ?? tk?.market?.identifier ?? 'Exchange';
@@ -108,7 +110,8 @@ const fromCoingecko = async (chain: ChainConfig, address: string): Promise<Excha
       liquidityUsd: null,
       trustScore: trustOf(tk?.trust_score),
       source: 'coingecko' as const,
-      url: tk?.trade_url ?? undefined
+      url: tk?.trade_url ?? undefined,
+      logoUrl: typeof tk?.market?.logo === 'string' && tk.market.logo.startsWith('http') ? tk.market.logo : undefined
     };
   });
 };
@@ -126,7 +129,8 @@ const dedupeSort = (rows: ExchangeListing[]): ExchangeListing[] => {
         volume24h: Math.max(existing.volume24h ?? 0, r.volume24h ?? 0) || existing.volume24h || r.volume24h,
         liquidityUsd: existing.liquidityUsd ?? r.liquidityUsd,
         trustScore: existing.trustScore ?? r.trustScore,
-        url: existing.url ?? r.url
+        url: existing.url ?? r.url,
+        logoUrl: existing.logoUrl ?? r.logoUrl
       });
     }
   }
