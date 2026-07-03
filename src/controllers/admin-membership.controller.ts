@@ -455,6 +455,86 @@ export const adminListPaymentAttempts = asyncHandler(async (req, res) => {
   return sendSuccess(res, 'Payment attempts fetched successfully.', { items });
 });
 
+// ── Admin: Revenue (Snippe) ──────────────────────────────────────────────────
+// GET /api/v1/admin/revenue — revenue analytics built from COMPLETED payment
+// attempts (written by both the Snippe webhook and the pull-based verify
+// fallback, so it covers every confirmed payment regardless of path).
+export const adminRevenue = asyncHandler(async (_req, res) => {
+  const { data, error } = await supabase
+    .from('payment_attempts')
+    .select('id, provider, reference, plan_slug, billing_interval, amount, currency, created_at, user:users(email, full_name)')
+    .eq('status', 'completed')
+    .order('created_at', { ascending: false })
+    .limit(2000);
+  if (error) throw new AppError('Unable to load revenue.', 500, [error]);
+
+  const rows = (data ?? []).filter((r) => r.amount != null);
+  const amt = (r: { amount: unknown }) => Number(r.amount) || 0;
+
+  // Dominant currency (Snippe is TZS today; stays correct if that ever changes).
+  const byCurrency = new Map<string, number>();
+  for (const r of rows) byCurrency.set(r.currency ?? 'TZS', (byCurrency.get(r.currency ?? 'TZS') ?? 0) + 1);
+  const currency = [...byCurrency.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'TZS';
+
+  const now = new Date();
+  const dayMs = 86_400_000;
+  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const startOfLastMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const sum = (from: Date, to?: Date) =>
+    rows.reduce((s, r) => {
+      const t = new Date(r.created_at as string);
+      return t >= from && (!to || t < to) ? s + amt(r) : s;
+    }, 0);
+
+  const total = rows.reduce((s, r) => s + amt(r), 0);
+  const this_month = sum(startOfMonth);
+  const last_month = sum(startOfLastMonth, startOfMonth);
+  const growth_pct = last_month > 0 ? Math.round(((this_month - last_month) / last_month) * 100) : null;
+
+  // Last 12 calendar months for the chart.
+  const monthly: { month: string; total: number; count: number }[] = [];
+  for (let i = 11; i >= 0; i -= 1) {
+    const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i + 1, 1));
+    const inMonth = rows.filter((r) => {
+      const t = new Date(r.created_at as string);
+      return t >= from && t < to;
+    });
+    monthly.push({ month: from.toISOString().slice(0, 7), total: inMonth.reduce((s, r) => s + amt(r), 0), count: inMonth.length });
+  }
+
+  const groupBy = (key: 'plan_slug' | 'billing_interval') => {
+    const m = new Map<string, { total: number; count: number }>();
+    for (const r of rows) {
+      const k = (r[key] as string) ?? 'unknown';
+      const g = m.get(k) ?? { total: 0, count: 0 };
+      g.total += amt(r);
+      g.count += 1;
+      m.set(k, g);
+    }
+    return [...m.entries()].map(([k, v]) => ({ key: k, ...v })).sort((a, b) => b.total - a.total);
+  };
+
+  return sendSuccess(res, 'Revenue fetched successfully.', {
+    currency,
+    summary: {
+      total,
+      count: rows.length,
+      avg: rows.length ? Math.round(total / rows.length) : 0,
+      today: sum(new Date(now.getTime() - ((now.getTime() % dayMs))), undefined),
+      last_7d: sum(new Date(now.getTime() - 7 * dayMs)),
+      last_30d: sum(new Date(now.getTime() - 30 * dayMs)),
+      this_month,
+      last_month,
+      growth_pct
+    },
+    monthly,
+    by_plan: groupBy('plan_slug'),
+    by_interval: groupBy('billing_interval'),
+    transactions: rows.slice(0, 100)
+  });
+});
+
 // PUT /api/v1/admin/payment-attempts/:id/followup
 export const adminUpdateAttemptFollowup = asyncHandler(async (req, res) => {
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };

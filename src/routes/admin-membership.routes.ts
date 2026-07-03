@@ -10,6 +10,7 @@ import {
   adminGetUser,
   adminListPaymentAttempts,
   adminListPayments,
+  adminRevenue,
   adminListPlans,
   adminListSubscriptions,
   adminListUsers,
@@ -71,6 +72,7 @@ router.get('/subscriptions', adminListSubscriptions);
 router.get('/subscriptions/:id', validate({ params: subscriptionIdParam }), adminGetSubscription);
 
 // Payment events visibility layer.
+router.get('/revenue', adminRevenue);
 router.get('/payments', adminListPayments);
 router.put('/payments/:id/reviewed', validate({ params: paymentIdParam }), adminMarkPaymentReviewed);
 
