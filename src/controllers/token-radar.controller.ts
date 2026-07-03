@@ -3,7 +3,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { analyzeToken, getReport, listMyReports, scannedTokensToday, DISCLAIMER } from '../services/token-radar/tokenRadar.service';
 import { CHAINS, chainOf } from '../services/token-radar/chainConfig';
-import { resolveUserAccess, limitFor, type PlanAccess } from '../services/membership/plan-access';
+import { resolveUserAccess, limitFor, cheapestPlanWithLimitAbove, type PlanAccess } from '../services/membership/plan-access';
 
 // Token Position Radar — user endpoints. Auth + feature gate applied by the
 // router; the daily scan allowance (distinct COINS per day) is enforced in the
@@ -48,6 +48,10 @@ export const analyzeCtrl = asyncHandler(async (req, res) => {
   }
   if (outcome.status === 'chains') {
     return sendSuccess(res, 'This address exists on multiple networks — pick one.', { status: 'chains', options: outcome.options });
+  }
+  if (outcome.status === 'limit') {
+    const required_plan = await cheapestPlanWithLimitAbove('max_token_scans_daily', outcome.limit).catch(() => 'premium');
+    return sendSuccess(res, 'Daily scan limit reached.', { status: 'limit', limit: outcome.limit, used: outcome.used, required_plan });
   }
   return sendSuccess(res, 'Analysis completed.', { status: 'completed', report: outcome.report });
 });

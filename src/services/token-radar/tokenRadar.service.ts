@@ -131,6 +131,7 @@ export type AnalyzeOutcome =
   | { status: 'completed'; report: TokenReport }
   | { status: 'matches'; matches: Extract<ResolveResult, { kind: 'matches' }>['matches'] }
   | { status: 'chains'; options: ChainOption[] }
+  | { status: 'limit'; limit: number; used: number }
   | { status: 'error'; message: string };
 
 /**
@@ -186,7 +187,8 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
     const today = await scannedTokensToday(userId);
     const already = today.has(`${chain.slug}:${address.toLowerCase()}`);
     if (!already && today.size >= limit) {
-      throw new AppError(`Your plan allows ${limit} token scan${limit === 1 ? '' : 's'} per day (repeat scans of the same coin are free). Upgrade to Premium for more scans.`, 403);
+      // Structured outcome (not an error) so the UI can render an upgrade CTA.
+      return { status: 'limit', limit, used: today.size };
     }
     consumesQuota = !already;
   }
