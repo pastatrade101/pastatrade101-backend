@@ -58,6 +58,9 @@ export interface AnalysisInput {
   market: MarketContext;
   input_type: 'address' | 'ticker';
   listing_strength?: number | null; // 0–100 exchange-listing strength (confidence only)
+  // Market Regime Engine (optional): broader altcoin environment. Influences
+  // timing/risk and can CAP the rating in a hostile regime — never upgrades.
+  regime?: { env_score: number | null; label: string; warnings: RiskWarning[] } | null;
 }
 
 export interface Scores {
@@ -240,8 +243,12 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
   const momentum = momentumScore(dex);
   const holder_health = holderHealthScore(holder);
   const contract_safety = contractSafetyScore(i.security);
-  const timing = timingScore(i.market);
   const strength = marketStrengthScore(dex);
+  // Timing blends the platform macro context with the Market Regime Engine's
+  // altcoin-environment score (50/50 when both are available).
+  const baseTiming = timingScore(i.market);
+  const envScore = i.regime?.env_score ?? null;
+  const timing = baseTiming != null && envScore != null ? clamp(baseTiming * 0.5 + envScore * 0.5) : (envScore ?? baseTiming);
 
   // ── Holder weight by source confidence; unused weight redistributed. ──
   const holderWeight = holder_health == null ? 0 : !holderVerified ? 0.03 : holder.confidence === 'high' ? 0.15 : 0.075;
@@ -258,7 +265,12 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
   const avail = parts.filter((p) => p.v != null) as { v: number; w: number }[];
   const wsum = avail.reduce((s, p) => s + p.w, 0) || 1;
   const opportunity = clamp(avail.reduce((s, p) => s + p.v * p.w, 0) / wsum);
-  const risk = riskScore(i, holderVerified);
+  let risk = riskScore(i, holderVerified);
+  // Hostile market regime raises downside risk for every altcoin (bounded bump).
+  if (envScore != null) {
+    if (envScore < 35) risk = clamp(risk + 8);
+    else if (envScore < 45) risk = clamp(risk + 4);
+  }
 
   // ── Warnings (severity-graded) ──
   const vol = dex.volume_24h;
@@ -325,6 +337,13 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
   const high = warnings.filter((w) => w.severity === 'high' || w.severity === 'critical').length;
   if (high >= 2) rating = downgradeRating(rating, 'Weak Setup');
   if (risk > 75) { rating = downgradeRating(rating, 'High Risk / Avoid for Now'); reasons.push('the overall risk score is very high'); }
+
+  // Market-regime cap: in a hostile altcoin environment even a good token setup
+  // shouldn't read better than "wait for confirmation". Never upgrades a rating.
+  if (envScore != null && envScore < 30) {
+    rating = downgradeRating(rating, 'Neutral / Wait for Confirmation');
+    reasons.push(`the broader market regime is high-risk for altcoins (${i.regime?.label ?? 'hostile regime'})`);
+  }
 
   // ── Confidence: availability vs quality ──
   let availC = 40;

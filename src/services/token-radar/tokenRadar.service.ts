@@ -8,6 +8,7 @@ import { pairsForToken } from '../sources/dexscreener.client';
 import { resolveToken, type ResolveResult } from './tokenResolver';
 import { getHolderData } from './holderData.service';
 import { getExchangeListings, type ExchangeListingSummary } from './exchangeListing.service';
+import { getMarketRegimeSnapshot, type MarketRegimeSnapshot } from '../market-regime-engine/marketRegimeEngine.service';
 import { computeAnalysis, type MarketContext, type MarketData, type RiskWarning, type Rating, type Scores } from './scoringEngine';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -42,6 +43,7 @@ export interface TokenReport {
   data_quality_warnings: string[];
   timing_view: string;
   exchanges: ExchangeListingSummary | null;
+  market_regime: { label: string; score: number; summary: string; warnings: MarketRegimeSnapshot['warnings'] } | null;
   disclaimer: string;
   created_at?: string;
 }
@@ -121,7 +123,7 @@ const rowToReport = (row: any, chain: ChainConfig, cached: boolean): TokenReport
     confidence: { data_availability: row.data_availability_confidence ?? row.confidence_score ?? 0, analysis_quality: row.analysis_quality_confidence ?? row.confidence_score ?? 0, combined: row.confidence_score ?? 0, note: raw.confidence_note ?? '' },
     rating: row.final_rating, rating_explanation: row.rating_explanation ?? '', action_label: row.action_label,
     summary: row.summary, positives: row.positives ?? [], warnings: row.warnings ?? [], data_quality_warnings: row.data_quality_warnings ?? [],
-    timing_view: row.timing_view ?? '', exchanges: raw.exchanges ?? null, disclaimer: DISCLAIMER, created_at: row.created_at
+    timing_view: row.timing_view ?? '', exchanges: raw.exchanges ?? null, market_regime: raw.market_regime ?? null, disclaimer: DISCLAIMER, created_at: row.created_at
   };
 };
 
@@ -218,20 +220,27 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
   // Contract risk first (GoPlus) — reused as the free holder baseline so we don't
   // call GoPlus twice, and holder escalation (Moralis) only fires when needed.
   const security = await tokenSecurityDetail(chain.goplusNetwork ?? chain.slug, address).catch(() => null);
-  const [holder, market, exchanges] = await Promise.all([
+  const [holder, market, exchanges, regimeSnap] = await Promise.all([
     getHolderData(chain, address, { liquidityUsd: dex.liquidity_usd, marketCap: dex.market_cap }, security),
     marketContext(),
-    getExchangeListings(chain, address).catch(() => null)
+    getExchangeListings(chain, address).catch(() => null),
+    getMarketRegimeSnapshot().catch(() => null)
   ]);
 
   const age_days = pair.pairCreatedAt ? Math.max(0, Math.floor((Date.now() - pair.pairCreatedAt) / 86_400_000)) : null;
-  const a = computeAnalysis({ dex, holder, security, age_days, market, input_type: resolved.input_type, listing_strength: exchanges?.listingStrengthScore ?? null });
+  const regime = regimeSnap && regimeSnap.marketTimingLabel !== 'Unknown'
+    ? { env_score: regimeSnap.altcoinEnvironmentScore, label: regimeSnap.marketTimingLabel as string, warnings: regimeSnap.warnings }
+    : null;
+  const a = computeAnalysis({ dex, holder, security, age_days, market, input_type: resolved.input_type, listing_strength: exchanges?.listingStrengthScore ?? null, regime });
 
   // Listing warnings fold into the data-quality list (deduped).
   const data_quality_warnings = [...new Set([...a.data_quality_warnings, ...(exchanges?.warnings ?? [])])];
   const liqOk = (dex.liquidity_usd ?? 0) >= 50_000;
   const summary = buildSummary(a.rating, a.warnings, a.holder_meta.verified, holder.holders, liqOk);
-  const timing_view = timingView(a.scores.timing);
+  // Timing narrative: prefer the Market Regime Engine's read; fall back to the
+  // generic macro text when the regime is unavailable.
+  const timing_view = regimeSnap && regimeSnap.marketTimingLabel !== 'Unknown' ? regimeSnap.summary : timingView(a.scores.timing);
+  const market_regime = regime && regimeSnap ? { label: regime.label, score: regime.env_score ?? 0, summary: regimeSnap.summary, warnings: regimeSnap.warnings } : null;
 
   const row = {
     user_id: userId, chain: chain.slug, token_address: address, token_name: pair.baseToken.name ?? null, token_symbol: pair.baseToken.symbol ?? null,
@@ -247,7 +256,7 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
     raw_data: {
       pair_url: pair.url, dex: pair.dexId, confidence_note: a.confidence.note,
       holder_weight: a.holder_meta.weight_used, holder_used_in_final: a.holder_meta.used_in_final_score, holder_warning: a.holder_meta.warning,
-      exchanges, security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
+      exchanges, market_regime, security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
     }
   };
   const { data: saved, error } = await supabase.from('token_analysis_reports').insert(row).select('*').maybeSingle();

@@ -71,5 +71,19 @@ const c7 = computeAnalysis(input({ dex: null, holder: holder({ source: 'unknown'
 check('case7: Unknown / Insufficient Data', c7.rating === 'Unknown / Insufficient Data');
 check('case7: opportunity null', c7.scores.opportunity === null);
 
+
+// Case 8: hostile market regime → rating capped at Neutral + risk bumped
+const goodInput = input({ dex: dex({ liquidity_usd: 500_000, volume_24h: 250_000 }), holder: holder({ holders: 12000, top10_percent: 22, source: 'moralis', confidence: 'high', verified: true }) });
+const noRegime = computeAnalysis(goodInput);
+const hostile = computeAnalysis({ ...goodInput, regime: { env_score: 22, label: 'High-risk market regime', warnings: [] } });
+check('case8: hostile regime caps rating at Neutral', hostile.rating === 'Neutral / Wait for Confirmation');
+check('case8: hostile regime raises risk', (hostile.scores.risk ?? 0) > (noRegime.scores.risk ?? 0));
+check('case8: explanation mentions market regime', hostile.rating_explanation.toLowerCase().includes('market regime'));
+
+// Case 9: supportive regime lifts timing (never upgrades rating beyond its own merit)
+const supportive = computeAnalysis({ ...goodInput, regime: { env_score: 80, label: 'Strong altcoin tailwind', warnings: [] } });
+check('case9: supportive regime lifts timing', (supportive.scores.timing ?? 0) > (noRegime.scores.timing ?? 0));
+check('case9: rating not artificially upgraded past Good/Strong', ['Good Watchlist Candidate', 'Strong Opportunity'].includes(supportive.rating));
+
 console.log(`\n${fail === 0 ? '🎉 ALL PASS' : '⚠️ FAILURES'} — ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
