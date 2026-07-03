@@ -83,11 +83,15 @@ const buildSummary = (rating: Rating, warnings: RiskWarning[], holderVerified: b
   return `Token Position Radar rates this token ${rating}. ${liqOk ? 'Reported liquidity is reasonable' : 'Liquidity is limited'}, and no severe red flags were detected, but ${rating === 'Good Watchlist Candidate' || rating === 'Strong Opportunity' ? 'keep monitoring for continuation.' : 'the setup is not confirmed yet — patience is reasonable.'}`;
 };
 
-export const scansToday = async (userId: string): Promise<number> => {
+/**
+ * Distinct tokens this user scanned today (UTC) — the quota unit is COINS, not
+ * requests: repeat scans of the same coin never consume extra allowance.
+ */
+export const scannedTokensToday = async (userId: string): Promise<Set<string>> => {
   const start = new Date();
   start.setUTCHours(0, 0, 0, 0);
-  const { count } = await supabase.from('token_analysis_reports').select('id', { count: 'exact', head: true }).eq('user_id', userId).gte('created_at', start.toISOString());
-  return count ?? 0;
+  const { data } = await supabase.from('token_analysis_reports').select('chain, token_address').eq('user_id', userId).gte('created_at', start.toISOString());
+  return new Set((data ?? []).map((r) => `${r.chain}:${String(r.token_address).toLowerCase()}`));
 };
 
 const cachedReport = async (chain: string, address: string) => {
@@ -146,7 +150,12 @@ export const detectChainsForAddress = async (address: string): Promise<ChainOpti
     .sort((a, b) => b.liquidity_usd - a.liquidity_usd);
 };
 
-export const analyzeToken = async (chainSlug: string, input: string, userId: string, fresh = false, ensureQuota?: () => Promise<void>): Promise<AnalyzeOutcome> => {
+/**
+ * `limit` = daily allowance in DISTINCT COINS (null = unlimited/admin). Enforced
+ * BEFORE the cache is served so cached results can't bypass the cap; repeat scans
+ * of an already-counted coin are always free.
+ */
+export const analyzeToken = async (chainSlug: string, input: string, userId: string, fresh = false, limit: number | null = null): Promise<AnalyzeOutcome> => {
   // ── Auto-detect: no chain selected, address pasted → find its chain(s). ──
   let resolvedSlug = chainSlug;
   if (chainSlug === 'auto') {
@@ -170,12 +179,33 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
   const pair = resolved.pair;
   const address = pair.baseToken.address;
 
-  if (!fresh) {
-    const hit = await cachedReport(chain.slug, address);
-    if (hit) return { status: 'completed', report: rowToReport(hit, chain, true) };
+  // ── Daily coin quota — checked BEFORE the cache so cached results can't
+  // bypass the cap. A coin the user already scanned today is always free.
+  let consumesQuota = false;
+  if (limit !== null) {
+    const today = await scannedTokensToday(userId);
+    const already = today.has(`${chain.slug}:${address.toLowerCase()}`);
+    if (!already && today.size >= limit) {
+      throw new AppError(`Your plan allows ${limit} token scan${limit === 1 ? '' : 's'} per day (repeat scans of the same coin are free). Upgrade to Premium for more scans.`, 403);
+    }
+    consumesQuota = !already;
   }
 
-  if (ensureQuota) await ensureQuota();
+  if (!fresh) {
+    const hit = await cachedReport(chain.slug, address);
+    if (hit) {
+      // Attribute the cached result to this user so it counts against their
+      // daily coin quota (otherwise cross-user cache hits would be unlimited).
+      if (consumesQuota) {
+        const { id: _id, created_at: _created, ...copy } = hit;
+        await supabase
+          .from('token_analysis_reports')
+          .insert({ ...copy, user_id: userId, input_type: resolved.input_type, raw_input: input.trim().slice(0, 120), raw_data: { ...(hit.raw_data ?? {}), cache_attributed: true } })
+          .then(() => undefined, () => undefined); // best-effort — never block the report
+      }
+      return { status: 'completed', report: rowToReport(hit, chain, true) };
+    }
+  }
 
   const dex: MarketData = {
     liquidity_usd: pair.liquidity?.usd ?? null, volume_24h: pair.volume?.h24 ?? null, market_cap: pair.marketCap ?? null, fdv: pair.fdv ?? null,

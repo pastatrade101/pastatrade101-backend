@@ -1,18 +1,29 @@
 import { supabase } from '../config/supabase';
 import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
-import { analyzeToken, getReport, listMyReports, scansToday, DISCLAIMER } from '../services/token-radar/tokenRadar.service';
+import { analyzeToken, getReport, listMyReports, scannedTokensToday, DISCLAIMER } from '../services/token-radar/tokenRadar.service';
 import { CHAINS, chainOf } from '../services/token-radar/chainConfig';
-import { resolveUserAccess, limitFor } from '../services/membership/plan-access';
+import { resolveUserAccess, limitFor, type PlanAccess } from '../services/membership/plan-access';
 
 // Token Position Radar — user endpoints. Auth + feature gate applied by the
-// router; the daily scan allowance is enforced here per plan (admins unlimited).
+// router; the daily scan allowance (distinct COINS per day) is enforced in the
+// service before cache/analysis (admins unlimited).
+
+// FAIL-SAFE limits: if the plan has no max_token_scans_daily row (e.g. migration
+// not run, or a user without a plan mapping), an unconfigured limit must NOT mean
+// unlimited — it falls back to these per-plan caps (unknown plan → 1).
+const DEFAULT_SCAN_LIMITS: Record<string, number> = { free: 1, mid: 10, premium: 30 };
+const scanLimitFor = (access: PlanAccess): number | null => {
+  if (access.isAdmin) return null; // unlimited
+  const configured = limitFor(access, 'max_token_scans_daily');
+  return configured !== null ? configured : (DEFAULT_SCAN_LIMITS[access.plan.slug] ?? 1);
+};
 
 // GET /api/v1/token-radar/chains — supported networks + the caller's allowance.
 export const getChainsCtrl = asyncHandler(async (req, res) => {
   const access = await resolveUserAccess(req.user!.sub);
-  const limit = limitFor(access, 'max_token_scans_daily');
-  const used = limit === null ? 0 : await scansToday(req.user!.sub);
+  const limit = scanLimitFor(access);
+  const used = limit === null ? 0 : (await scannedTokensToday(req.user!.sub)).size;
   return sendSuccess(res, 'Chains loaded.', {
     chains: Object.values(CHAINS).map((c) => ({ slug: c.slug, name: c.name, native: c.nativeCurrency, type: c.type, status: c.status, popular: !!c.popular })),
     allowance: { limit, used, remaining: limit === null ? null : Math.max(0, limit - used) }
@@ -30,16 +41,7 @@ export const analyzeCtrl = asyncHandler(async (req, res) => {
 
   const userId = req.user!.sub;
   const access = await resolveUserAccess(userId);
-  const ensureQuota = async () => {
-    const limit = limitFor(access, 'max_token_scans_daily');
-    if (limit === null) return; // unlimited (admin / unconfigured plan)
-    const used = await scansToday(userId);
-    if (used >= limit) {
-      throw new AppError(`You have reached your daily token scan limit (${limit}). Upgrade to Premium for more scans.`, 403);
-    }
-  };
-
-  const outcome = await analyzeToken(chain, input, userId, fresh, ensureQuota);
+  const outcome = await analyzeToken(chain, input, userId, fresh, scanLimitFor(access));
   if (outcome.status === 'error') return sendSuccess(res, 'Token not found.', { status: 'error', message: outcome.message });
   if (outcome.status === 'matches') {
     return sendSuccess(res, 'Multiple tokens matched — pick the exact one.', { status: 'matches', matches: outcome.matches, disclaimer: DISCLAIMER });
