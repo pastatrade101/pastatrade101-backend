@@ -124,3 +124,116 @@ export const screenTokens = async (tokens: { network: string; contract: string }
   }
   return out;
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rich per-token security detail — used by the Token Position Radar. Separate
+// from screenTokens (EOR batch path) so both evolve independently. Graceful:
+// unavailable data comes back null and the caller lowers confidence.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TokenSecurityDetail {
+  checked: boolean;
+  // trading safety
+  is_honeypot: boolean | null;
+  cannot_sell_all: boolean | null;
+  buy_tax: number | null; // 0–1 fraction
+  sell_tax: number | null;
+  // contract properties
+  is_open_source: boolean | null;
+  is_proxy: boolean | null;
+  mintable: boolean | null;
+  freezable: boolean | null; // transfer pausable / freeze authority
+  has_blacklist: boolean | null;
+  hidden_owner: boolean | null;
+  can_take_back_ownership: boolean | null;
+  owner_change_balance: boolean | null;
+  selfdestruct: boolean | null;
+  // holders / liquidity
+  holder_count: number | null;
+  top10_percent: number | null; // 0–100
+  creator_percent: number | null; // 0–100
+  lp_locked_percent: number | null; // 0–100 (share of LP locked/burned)
+}
+
+const DETAIL_UNKNOWN: TokenSecurityDetail = {
+  checked: false,
+  is_honeypot: null, cannot_sell_all: null, buy_tax: null, sell_tax: null,
+  is_open_source: null, is_proxy: null, mintable: null, freezable: null,
+  has_blacklist: null, hidden_owner: null, can_take_back_ownership: null,
+  owner_change_balance: null, selfdestruct: null,
+  holder_count: null, top10_percent: null, creator_percent: null, lp_locked_percent: null
+};
+
+const pct = (v: unknown): number | null => {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(100, Math.max(0, n * 100)) : null;
+};
+
+// Real-wallet concentration: exclude contracts (staking/LP/MasterChef/router) and
+// locked/burn addresses — otherwise legit large-caps look "whale-heavy" when the
+// top holders are just protocol contracts. Falls back to raw if flags are absent.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const topHoldersPercent = (holders: any, top = 10): number | null => {
+  if (!Array.isArray(holders) || !holders.length) return null;
+  const isEoa = (h: any) => h?.is_contract !== 1 && h?.is_contract !== '1' && h?.is_locked !== 1 && h?.is_locked !== '1' && !/lock|burn|stake|masterchef|dead/i.test(String(h?.tag ?? ''));
+  const eoas = holders.filter(isEoa);
+  const list = eoas.length ? eoas : holders; // fall back if the API didn't tag anything
+  const sum = list.slice(0, top).reduce((s: number, h: any) => s + (Number(h?.percent) || 0), 0);
+  return Math.min(100, Math.max(0, sum * 100));
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const lpLockedPercent = (lp: any): number | null => {
+  if (!Array.isArray(lp) || !lp.length) return null;
+  const locked = lp.reduce((s: number, h: any) => s + (h?.is_locked === 1 || h?.is_locked === '1' ? Number(h?.percent) || 0 : 0), 0);
+  return Math.min(100, Math.max(0, locked * 100));
+};
+
+/** Full security detail for one token. `network` uses the radar chain slugs. */
+export const tokenSecurityDetail = async (network: string, contract: string): Promise<TokenSecurityDetail> => {
+  if (!contract) return DETAIL_UNKNOWN;
+  if (network === 'solana') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const d = await get<{ result: Record<string, any> }>(`${BASE}/solana/token_security?contract_addresses=${contract}`);
+    const v = d?.result?.[contract];
+    if (!v) return DETAIL_UNKNOWN;
+    return {
+      ...DETAIL_UNKNOWN,
+      checked: true,
+      mintable: bool(v?.mintable?.status),
+      freezable: bool(v?.freezable?.status),
+      has_blacklist: null,
+      holder_count: v?.holder_count != null ? Number(v.holder_count) || null : null,
+      top10_percent: topHoldersPercent(v?.holders),
+      creator_percent: pct(v?.creator_percent),
+      lp_locked_percent: null
+    };
+  }
+  const chainId = networkToChainId(network);
+  if (!chainId) return DETAIL_UNKNOWN;
+  const addr = contract.toLowerCase();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const d = await get<{ result: Record<string, any> }>(`${BASE}/token_security/${chainId}?contract_addresses=${addr}`);
+  const v = d?.result?.[addr];
+  if (!v) return DETAIL_UNKNOWN;
+  return {
+    checked: true,
+    is_honeypot: bool(v?.is_honeypot),
+    cannot_sell_all: bool(v?.cannot_sell_all),
+    buy_tax: taxNum(v?.buy_tax),
+    sell_tax: taxNum(v?.sell_tax),
+    is_open_source: bool(v?.is_open_source),
+    is_proxy: bool(v?.is_proxy),
+    mintable: bool(v?.is_mintable ?? v?.mintable),
+    freezable: bool(v?.transfer_pausable),
+    has_blacklist: bool(v?.is_blacklisted),
+    hidden_owner: bool(v?.hidden_owner),
+    can_take_back_ownership: bool(v?.can_take_back_ownership),
+    owner_change_balance: bool(v?.owner_change_balance),
+    selfdestruct: bool(v?.selfdestruct),
+    holder_count: v?.holder_count != null ? Number(v.holder_count) || null : null,
+    top10_percent: topHoldersPercent(v?.holders),
+    creator_percent: pct(v?.creator_percent),
+    lp_locked_percent: lpLockedPercent(v?.lp_holders)
+  };
+};
