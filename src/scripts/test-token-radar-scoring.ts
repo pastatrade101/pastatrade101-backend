@@ -112,5 +112,36 @@ const noChart = computeAnalysis(goodInput);
 check('chart: strong chart lifts momentum', (withChart.scores.momentum ?? 0) > (noChart.scores.momentum ?? 0));
 check('chart: missing chart adds low warning', noChart.warnings.some((w) => w.label === 'No Chart History'));
 
+
+// ── Case 10: BASED — strong momentum on a thin book (Momentum vs Liquidity Mismatch) ──
+const based = computeAnalysis(input({
+  dex: dex({ liquidity_usd: 14_000, volume_24h: 963, market_cap: 22_640_000, fdv: 44_630_000, price_change_h24: 4, price_change_h6: 2, price_change_h1: 1, buys_24h: 40, sells_24h: 25 }),
+  holder: holder({ holders: 3639, top10_percent: 55, source: 'goplus', confidence: 'medium', verified: true }),
+  age_days: 75,
+  listing_strength: 97,
+  market: { macro_score: 35, btc_risk: 0.8, leverage_risk: 0.45, alt_season: 55 }, // hostile backdrop → risk ~72 like the real BASED scan
+  chart: { volume_trend_score: 70, relative_strength_score: 95, breakout_score: 80, chart_trend_score: 94, rs_outperforming: true, structure_bullish: true }
+}));
+check('case10: rating = Neutral (capped, not upgraded)', based.rating === 'Neutral / Wait for Confirmation');
+check('case10: mismatch warning present', based.warnings.some((w) => w.label === 'Momentum vs Liquidity Mismatch'));
+check('case10: setup type = Momentum-led setup', based.setup_type === 'Momentum-led setup');
+check('case10: action = Wait for liquidity confirmation', based.action_label === 'Wait for liquidity confirmation');
+check('case10: positives mention outperforming BTC', based.positives.some((x) => x.includes('outperforming BTC')));
+check('case10: positives mention bullish structure', based.positives.some((x) => x.includes('above MA20 and MA50')));
+check('case10: positives mention strong listings', based.positives.some((x) => x.includes('listing presence is strong')));
+check('case10: risk-signal names elevated risk', based.warnings.some((w) => w.label === 'Elevated Risk Score'));
+check('case10: risk-signal names thin liquidity', based.warnings.some((w) => w.label === 'Thin Liquidity'));
+check('case10: explanation says momentum alone is not enough', based.rating_explanation.includes('not enough to upgrade the setup'));
+console.log(`   case10 → ${based.rating} | ${based.setup_type} | action="${based.action_label}" | risk ${based.scores.risk} liq ${based.scores.liquidity} momentum ${based.scores.momentum}`);
+
+// Case 11: very thin book + very low volume → capped at Weak Setup even with great chart
+const thin = computeAnalysis(input({
+  dex: dex({ liquidity_usd: 4_000, volume_24h: 400, buys_24h: 10, sells_24h: 8 }),
+  holder: holder({ holders: 900, top10_percent: 45, source: 'goplus', confidence: 'medium', verified: true }),
+  listing_strength: 95,
+  chart: { volume_trend_score: 75, relative_strength_score: 90, breakout_score: 85, chart_trend_score: 92, rs_outperforming: true, structure_bullish: true }
+}));
+check('case11: capped ≤ Weak Setup despite chart 92 + listings 95', ['Weak Setup', 'High Risk / Avoid for Now'].includes(thin.rating));
+
 console.log(`\n${fail === 0 ? '🎉 ALL PASS' : '⚠️ FAILURES'} — ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

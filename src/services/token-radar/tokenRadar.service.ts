@@ -47,6 +47,7 @@ export interface TokenReport {
   exchanges: ExchangeListingSummary | null;
   market_regime: { label: string; score: number; summary: string; warnings: MarketRegimeSnapshot['warnings'] } | null;
   chart: ReportChart | null;
+  setup_type: string;
   disclaimer: string;
   created_at?: string;
 }
@@ -54,10 +55,21 @@ export interface TokenReport {
 // Compact, storable form of ChartIntelligenceResult (candles → {t, c, v}).
 export interface ReportChart extends Omit<ChartIntelligenceResult, 'candles'> {
   series: { t: string; c: number; v: number | null }[];
+  sourceConfidence: { level: 'high' | 'medium'; verified: boolean; reason: string };
 }
+// Chart data now influences Momentum, so its provenance is shown like holder data.
+const CHART_SOURCE_CONFIDENCE: Record<string, ReportChart['sourceConfidence']> = {
+  binance: { level: 'high', verified: true, reason: 'Exchange-grade OHLCV from a verified Binance listing.' },
+  coingecko: { level: 'high', verified: true, reason: 'Historical chart resolved from verified token mapping.' },
+  geckoterminal: { level: 'medium', verified: true, reason: 'Pool-based OHLCV from the token\'s main DEX pair.' }
+};
 const toReportChart = (r: ChartIntelligenceResult): ReportChart => {
   const { candles, ...rest } = r;
-  return { ...rest, series: candles.map((c) => ({ t: c.timestamp, c: c.close, v: c.volume })) };
+  return {
+    ...rest,
+    series: candles.map((c) => ({ t: c.timestamp, c: c.close, v: c.volume })),
+    sourceConfidence: CHART_SOURCE_CONFIDENCE[r.source] ?? { level: 'medium', verified: false, reason: 'Chart source could not be fully verified.' }
+  };
 };
 
 const marketContext = async (): Promise<MarketContext> => {
@@ -84,17 +96,35 @@ const timingView = (t: number | null): string =>
         ? 'The broader market backdrop is mixed — no strong tailwind or headwind. Stronger confirmation is needed before this becomes a strong setup.'
         : 'The broader market backdrop is a headwind — BTC regime or macro conditions are risk-off. Even good tokens struggle in this environment.';
 
-// Red-flags-first summary.
-const buildSummary = (rating: Rating, warnings: RiskWarning[], holderVerified: boolean, holderCount: number | null, liqOk: boolean): string => {
+// Red-flags-first, setup-aware summary.
+interface SummaryCtx {
+  setupType: string;
+  chartStrong: boolean; // bullish structure and/or outperforming BTC
+  listingStrong: boolean;
+  holderConcentrated: boolean;
+}
+const buildSummary = (rating: Rating, warnings: RiskWarning[], holderVerified: boolean, holderCount: number | null, liqOk: boolean, ctx: SummaryCtx): string => {
   const worst = warnings[0];
   if (rating === 'Unknown / Insufficient Data') return 'There is not enough reliable data to score this token confidently.';
   if (holderVerified && (rating === 'High Risk / Avoid for Now') && holderCount != null && holderCount < 50)
     return `Token Position Radar found serious holder-distribution risk. Verified holder data shows only ${holderCount} holder${holderCount === 1 ? '' : 's'} and poor holder health. Combined with the market picture, treat this as high risk until wider holder distribution and stronger activity appear.`;
+
+  // Momentum-led on a thin book — the strengths are real, the confirmation isn't.
+  if (ctx.setupType === 'Momentum-led setup' && !liqOk && rating !== 'High Risk / Avoid for Now') {
+    const strengths = [
+      ctx.chartStrong ? 'Chart structure and relative strength vs BTC are strong' : 'Short-term momentum is strong',
+      ctx.listingStrong ? 'and global exchange access is excellent' : ''
+    ].filter(Boolean).join(' ');
+    const weaknesses = `liquidity is thin${ctx.holderConcentrated ? ' and holder distribution is still concentrated' : ''}`;
+    return `Token Position Radar rates this token ${rating}. ${strengths}. However, ${weaknesses}, so this is a momentum-led setup that still needs liquidity confirmation before it becomes a stronger opportunity.`;
+  }
+
   if (worst && (worst.severity === 'critical' || worst.severity === 'high')) {
     const holderNote = holderCount != null && !holderVerified ? ' Holder data from the current source is unverified, so it was not treated as final truth.' : '';
     return `Token Position Radar found that this token${liqOk ? ' has strong reported liquidity, but the setup is not fully confirmed' : ' is not a confirmed setup'}. The main concern: ${worst.message.replace(/\.$/, '').toLowerCase()}.${holderNote} Wait for stronger, verified activity before considering this healthy.`;
   }
-  return `Token Position Radar rates this token ${rating}. ${liqOk ? 'Reported liquidity is reasonable' : 'Liquidity is limited'}, and no severe red flags were detected, but ${rating === 'Good Watchlist Candidate' || rating === 'Strong Opportunity' ? 'keep monitoring for continuation.' : 'the setup is not confirmed yet — patience is reasonable.'}`;
+  const setupNote = ctx.setupType !== 'Unknown setup' ? ` This reads as a ${ctx.setupType.toLowerCase()}.` : '';
+  return `Token Position Radar rates this token ${rating}. ${liqOk ? 'Reported liquidity is reasonable' : 'Liquidity is limited'}, and no severe red flags were detected, but ${rating === 'Good Watchlist Candidate' || rating === 'Strong Opportunity' ? 'keep monitoring for continuation.' : 'the setup is not confirmed yet — patience is reasonable.'}${setupNote}`;
 };
 
 /**
@@ -135,7 +165,7 @@ const rowToReport = (row: any, chain: ChainConfig, cached: boolean): TokenReport
     confidence: { data_availability: row.data_availability_confidence ?? row.confidence_score ?? 0, analysis_quality: row.analysis_quality_confidence ?? row.confidence_score ?? 0, combined: row.confidence_score ?? 0, note: raw.confidence_note ?? '' },
     rating: row.final_rating, rating_explanation: row.rating_explanation ?? '', action_label: row.action_label,
     summary: row.summary, positives: row.positives ?? [], warnings: row.warnings ?? [], data_quality_warnings: row.data_quality_warnings ?? [],
-    timing_view: row.timing_view ?? '', exchanges: raw.exchanges ?? null, market_regime: raw.market_regime ?? null, chart: raw.chart ?? null, disclaimer: DISCLAIMER, created_at: row.created_at
+    timing_view: row.timing_view ?? '', exchanges: raw.exchanges ?? null, market_regime: raw.market_regime ?? null, chart: raw.chart ?? null, setup_type: raw.setup_type ?? 'Unknown setup', disclaimer: DISCLAIMER, created_at: row.created_at
   };
 };
 
@@ -258,13 +288,33 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
   const a = computeAnalysis({
     dex, holder, security, age_days, market, input_type: resolved.input_type,
     listing_strength: exchanges?.listingStrengthScore ?? null, regime,
-    chart: chartResult ? { volume_trend_score: chartResult.volumeTrendScore, relative_strength_score: chartResult.relativeStrengthScore, breakout_score: chartResult.breakoutScore } : null
+    chart: chartResult
+      ? {
+          volume_trend_score: chartResult.volumeTrendScore,
+          relative_strength_score: chartResult.relativeStrengthScore,
+          breakout_score: chartResult.breakoutScore,
+          chart_trend_score: chartResult.chartTrendScore,
+          rs_outperforming: chartResult.relativeStrengthVsBtc.status === 'outperforming_btc',
+          structure_bullish: chartResult.priceVsMa20 === 'above' && chartResult.priceVsMa50 === 'above'
+        }
+      : null
   });
 
   // Listing warnings fold into the data-quality list (deduped).
   const data_quality_warnings = [...new Set([...a.data_quality_warnings, ...(exchanges?.warnings ?? [])])];
   const liqOk = (dex.liquidity_usd ?? 0) >= 50_000;
-  const summary = buildSummary(a.rating, a.warnings, a.holder_meta.verified, holder.holders, liqOk);
+  const chartStrong = !!chartResult && (chartResult.relativeStrengthVsBtc.status === 'outperforming_btc' || (chartResult.priceVsMa20 === 'above' && chartResult.priceVsMa50 === 'above'));
+  const summary = buildSummary(a.rating, a.warnings, a.holder_meta.verified, holder.holders, liqOk, {
+    setupType: a.setup_type,
+    chartStrong,
+    listingStrong: (exchanges?.listingStrengthScore ?? 0) >= 80,
+    holderConcentrated: a.scores.holder_health != null && a.scores.holder_health < 40
+  });
+  // Chart strength on a thin book is early momentum, not confirmation — say so
+  // right inside the chart narrative too.
+  if (chartResult && chartStrong && (a.scores.liquidity ?? 100) < 40) {
+    chartResult.summary += ' However, liquidity is thin, so the chart strength should be treated as early momentum rather than a fully confirmed setup.';
+  }
   // Timing narrative: prefer the Market Regime Engine's read; fall back to the
   // generic macro text when the regime is unavailable.
   const timing_view = regimeSnap && regimeSnap.marketTimingLabel !== 'Unknown' ? regimeSnap.summary : timingView(a.scores.timing);
@@ -284,7 +334,7 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
     raw_data: {
       pair_url: pair.url, dex: pair.dexId, confidence_note: a.confidence.note,
       holder_weight: a.holder_meta.weight_used, holder_used_in_final: a.holder_meta.used_in_final_score, holder_warning: a.holder_meta.warning,
-      exchanges, market_regime, chart: chartResult ? toReportChart(chartResult) : null, security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
+      exchanges, market_regime, chart: chartResult ? toReportChart(chartResult) : null, setup_type: a.setup_type, security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
     }
   };
   const { data: saved, error } = await supabase.from('token_analysis_reports').insert(row).select('*').maybeSingle();

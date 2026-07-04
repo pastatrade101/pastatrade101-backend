@@ -63,8 +63,19 @@ export interface AnalysisInput {
   regime?: { env_score: number | null; label: string; warnings: RiskWarning[] } | null;
   // Chart Intelligence (optional): historical structure scores. When present,
   // Momentum = price action 30% + volume trend 25% + RS vs BTC 25% + breakout 20%.
-  chart?: { volume_trend_score: number; relative_strength_score: number; breakout_score: number } | null;
+  chart?: {
+    volume_trend_score: number;
+    relative_strength_score: number;
+    breakout_score: number;
+    chart_trend_score?: number | null;
+    rs_outperforming?: boolean; // 30d relative strength vs BTC > +10pp
+    structure_bullish?: boolean; // price above MA20 AND MA50
+  } | null;
 }
+
+export type SetupType =
+  | 'Momentum-led setup' | 'Liquidity-confirmed setup' | 'Listing-led setup'
+  | 'Holder-supported setup' | 'Contract-risk-limited setup' | 'Weak activity setup' | 'Unknown setup';
 
 export interface Scores {
   opportunity: number | null;
@@ -86,6 +97,7 @@ export interface AnalysisResult {
   warnings: RiskWarning[];
   data_quality_warnings: string[];
   positives: string[];
+  setup_type: SetupType;
 }
 
 const clamp = (n: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, Math.round(n)));
@@ -235,7 +247,8 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
       action_label: 'Needs verified data',
       warnings: [{ label: 'Insufficient Data', message: 'No DEX, holder, or contract-risk data was available for this token.', severity: 'high' }],
       data_quality_warnings: [],
-      positives: []
+      positives: [],
+      setup_type: 'Unknown setup'
     };
   }
 
@@ -308,11 +321,32 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
   else if (liquidity >= 40 && !deadActivity) positives.push(`Liquidity is acceptable (${fmtUsd(liq)}).`);
   if (!deadActivity && momentum >= 60) positives.push('Volume and short-term momentum are improving.');
   if (contract_safety != null && contract_safety >= 70) positives.push('Contract safety checks are above average.');
+  if (i.chart?.rs_outperforming) positives.push('Token is outperforming BTC over 30 days.');
+  if (i.chart?.structure_bullish) positives.push('Chart structure is bullish: price is above MA20 and MA50.');
+  if ((i.listing_strength ?? 0) >= 80) positives.push('Exchange listing presence is strong.');
+  if ((timing ?? 0) >= 65) positives.push('Market timing is supportive.');
   if (holderVerified && (holder_health ?? 0) >= 60) positives.push(`Holder base looks healthy${holder.holders ? ` (${holder.holders.toLocaleString()} holders, ${holder.source})` : ''}.`);
+  else if (holderVerified) positives.push('Holder data is verified.');
+
+  // ── Momentum vs Liquidity Mismatch — strong chart momentum on a thin book is
+  // early momentum, not a confirmed setup. Risk-aware note, NOT a scam warning.
+  const chartTrend = i.chart?.chart_trend_score ?? null;
+  const strongMomentum = chartTrend != null && ((chartTrend > 80 && momentum >= 70) || (chartTrend > 85 && !!i.chart?.rs_outperforming));
+  const momoLiqMismatch = !!i.chart && strongMomentum && (liquidity < 40 || risk > 65);
+  if (momoLiqMismatch) {
+    warnings.push({ label: 'Momentum vs Liquidity Mismatch', message: 'Momentum is improving, but liquidity remains thin. Price movement may be easier to move and harder to trust without deeper liquidity.', severity: 'medium' });
+    warnings.push({ label: 'Unconfirmed Setup', message: 'Strong momentum exists, but liquidity is not yet strong enough to confirm a high-quality setup.', severity: 'low' });
+  }
+  // Risk-signal notes so the report names each weak pillar explicitly.
+  if (risk > 65) warnings.push({ label: 'Elevated Risk Score', message: `Risk score is elevated at ${risk}/100.`, severity: 'medium' });
+  if (liq != null && liq > 0 && liq < 50_000 && !deadActivity) warnings.push({ label: 'Thin Liquidity', message: `Liquidity is thin (${fmtUsd(liq)}) — even modest orders can move the price sharply.`, severity: 'medium' });
+  if (holderVerified && holder_health != null && holder_health < 40) warnings.push({ label: 'Weak Holder Health', message: 'Holder health is weak or concentrated.', severity: 'medium' });
+  if (secChecked && contract_safety != null && contract_safety >= 30 && contract_safety < 70) warnings.push({ label: 'Mixed Contract Safety', message: 'Contract safety is mixed — not fully strong.', severity: 'low' });
 
   // ── Rating: base from opportunity, then only ever downgrade ──
   let rating: Rating = baseRatingFor(opportunity);
   const reasons: string[] = [];
+  if (momoLiqMismatch) reasons.push('chart momentum and BTC-relative strength are strong');
 
   // Liquidity / volume / activity overrides (source-independent).
   if (liq != null && liq > 0 && liq < 10_000) { rating = downgradeRating(rating, 'Weak Setup'); reasons.push('liquidity is very low (under $10k), so exits are risky'); }
@@ -346,6 +380,17 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
   const high = warnings.filter((w) => w.severity === 'high' || w.severity === 'critical').length;
   if (high >= 2) rating = downgradeRating(rating, 'Weak Setup');
   if (risk > 75) { rating = downgradeRating(rating, 'High Risk / Avoid for Now'); reasons.push('the overall risk score is very high'); }
+
+  // Liquidity caps: thin books cap the rating no matter how strong the chart or
+  // listings are. Strong momentum alone cannot upgrade an unconfirmed setup.
+  if (liquidity < 35 && risk > 65) {
+    rating = downgradeRating(rating, 'Neutral / Wait for Confirmation');
+    reasons.push('liquidity is thin and risk remains elevated — strong momentum alone is not enough to upgrade the setup without better liquidity confirmation');
+  }
+  if (liquidity < 25 && vol != null && vol < 1_000) {
+    rating = downgradeRating(rating, 'Weak Setup');
+    reasons.push('liquidity is very thin and trading volume is very low');
+  }
 
   // Market-regime cap: in a hostile altcoin environment even a good token setup
   // shouldn't read better than "wait for confirmation". Never upgrades a rating.
@@ -391,7 +436,21 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
         ? `The token was rated ${rating} because ${dedupe(reasons).join(', ')}.${!holderVerified && holder.holders != null ? ' Holder data is unverified, so it was not used as a severe holder-risk override.' : ''}`
         : `The token was rated ${rating} based on the balance of liquidity, momentum, contract safety and market timing.`;
 
-  const action_label = actionFor(rating, holderVerified);
+  // ── Setup type — what is carrying this token right now? ──
+  const listingStrong = (i.listing_strength ?? 0) >= 80;
+  let setup_type: SetupType = 'Unknown setup';
+  if (deadActivity || (momentum < 40 && liquidity < 40)) setup_type = 'Weak activity setup';
+  else if (secChecked && contract_safety != null && contract_safety < 45) setup_type = 'Contract-risk-limited setup';
+  else if ((strongMomentum || momentum >= 70) && liquidity < 55) setup_type = 'Momentum-led setup';
+  else if (liquidity >= 65 && momentum >= 60) setup_type = 'Liquidity-confirmed setup';
+  else if (listingStrong && liquidity < 55) setup_type = 'Listing-led setup';
+  else if (holderVerified && (holder_health ?? 0) >= 65) setup_type = 'Holder-supported setup';
+
+  let action_label = actionFor(rating, holderVerified);
+  if (momoLiqMismatch && (rating === 'Neutral / Wait for Confirmation' || rating === 'Good Watchlist Candidate')) action_label = 'Wait for liquidity confirmation';
+  else if (momoLiqMismatch && rating === 'High Risk / Avoid for Now') action_label = 'Avoid chasing thin liquidity';
+  else if (rating === 'Weak Setup' && liquidity < 25) action_label = 'Needs deeper liquidity';
+  else if (rating === 'Weak Setup' && setup_type === 'Momentum-led setup') action_label = 'Momentum improving, but not confirmed';
 
   return {
     scores: { opportunity, risk, momentum, liquidity, holder_health, contract_safety, timing },
@@ -402,7 +461,8 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
     action_label,
     warnings: sortSeverity(warnings),
     data_quality_warnings: dedupe(data_quality_warnings),
-    positives
+    positives,
+    setup_type
   };
 };
 
