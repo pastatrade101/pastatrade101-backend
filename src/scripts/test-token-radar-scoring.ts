@@ -7,6 +7,8 @@ import { computeAnalysis, downgradeRating, type AnalysisInput, type MarketData }
 import type { HolderDataResult } from '../services/token-radar/holderData.service';
 import type { TokenSecurityDetail } from '../services/sources/goplus.client';
 import { analyzeCandles, type HistoricalCandle } from '../services/token-radar/chartIntelligence.service';
+import { computeMultiChainContext, type ChainGroup } from '../services/token-radar/multiChainContextService';
+import { chainOf } from '../services/token-radar/chainConfig';
 
 const sec = (o: Partial<TokenSecurityDetail>): TokenSecurityDetail => ({
   checked: true, is_honeypot: false, cannot_sell_all: false, buy_tax: 0, sell_tax: 0, is_open_source: true, is_proxy: false,
@@ -142,6 +144,67 @@ const thin = computeAnalysis(input({
   chart: { volume_trend_score: 75, relative_strength_score: 90, breakout_score: 85, chart_trend_score: 92, rs_outperforming: true, structure_bullish: true }
 }));
 check('case11: capped ≤ Weak Setup despite chart 92 + listings 95', ['Weak Setup', 'High Risk / Avoid for Now'].includes(thin.rating));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-Chain Context — pure bias-detection tests.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n— Multi-Chain Context —');
+const grp = (o: Partial<ChainGroup> & { chainId: string }): ChainGroup => ({
+  name: o.name ?? o.chainId, tokenAddress: null, liquidityUsd: null, volume24hUsd: null, pairCount: 0, topDex: null, ...o
+});
+const ETH = chainOf('ethereum')!;
+const BASE = chainOf('base')!;
+
+// mc-1: token deepest on Base, user scanned Ethereum (a thin slice) → low-liquidity bias.
+const mcLowLiq = computeMultiChainContext({
+  scannedChain: ETH, scannedTokenAddress: '0xabc', scannedHolders: 1200,
+  groups: [
+    grp({ chainId: 'ethereum', name: 'Ethereum', liquidityUsd: 30_000, volume24hUsd: 20_000, pairCount: 1 }),
+    grp({ chainId: 'base', name: 'Base', liquidityUsd: 900_000, volume24hUsd: 300_000, pairCount: 3, topDex: 'aerodrome' })
+  ],
+  cexMarkets: 0, cexVolume24hUsd: null, cgTotalVolume24hUsd: 340_000, platformsOnlyChains: [], topMarkets: []
+});
+check('mc1: bias detected', mcLowLiq.biasDetected);
+check('mc1: type = scanned_chain_low_liquidity', mcLowLiq.biasType === 'scanned_chain_low_liquidity');
+check('mc1: warning names Base as deeper', !!mcLowLiq.warning && /Base/.test(mcLowLiq.warning.message));
+check('mc1: global liq sums both chains', mcLowLiq.globalMetrics.totalDexLiquidityUsd === 930_000);
+check('mc1: scanned holders carried through', mcLowLiq.scannedChainMetrics.holders === 1200);
+
+// mc-2: multi-chain + CEX-heavy, scanned chain a tiny sliver → global_activity_much_stronger.
+const mcGlobal = computeMultiChainContext({
+  scannedChain: ETH, scannedTokenAddress: '0xabc', scannedHolders: null,
+  groups: [
+    grp({ chainId: 'ethereum', name: 'Ethereum', liquidityUsd: 10_000, volume24hUsd: 5_000, pairCount: 1 }),
+    grp({ chainId: 'base', name: 'Base', liquidityUsd: 2_000_000, volume24hUsd: 1_500_000, pairCount: 4 }),
+    grp({ chainId: 'bsc', name: 'BNB Chain', liquidityUsd: 800_000, volume24hUsd: 600_000, pairCount: 2 })
+  ],
+  cexMarkets: 6, cexVolume24hUsd: 9_000_000, cgTotalVolume24hUsd: 11_100_000, platformsOnlyChains: [], topMarkets: []
+});
+check('mc2: type = global_activity_much_stronger', mcGlobal.biasType === 'global_activity_much_stronger');
+check('mc2: warning severity high', mcGlobal.warning?.severity === 'high');
+check('mc2: counts CEX markets globally', mcGlobal.globalMetrics.totalCexMarkets === 6);
+
+// mc-3: single-chain token, nothing elsewhere → no bias, representative read.
+const mcSingle = computeMultiChainContext({
+  scannedChain: ETH, scannedTokenAddress: '0xabc', scannedHolders: 500,
+  groups: [grp({ chainId: 'ethereum', name: 'Ethereum', liquidityUsd: 250_000, volume24hUsd: 180_000, pairCount: 2 })],
+  cexMarkets: 0, cexVolume24hUsd: null, cgTotalVolume24hUsd: 180_000, platformsOnlyChains: [], topMarkets: []
+});
+check('mc3: no bias for single-chain token', !mcSingle.biasDetected && mcSingle.biasType === 'none');
+check('mc3: no warning emitted', mcSingle.warning === undefined);
+check('mc3: summary calls single-chain representative', /representative/.test(mcSingle.summary));
+
+// mc-4: balanced two-chain presence where scanned chain is a fair share → no bias.
+const mcBalanced = computeMultiChainContext({
+  scannedChain: BASE, scannedTokenAddress: '0xabc', scannedHolders: null,
+  groups: [
+    grp({ chainId: 'base', name: 'Base', liquidityUsd: 500_000, volume24hUsd: 400_000, pairCount: 3 }),
+    grp({ chainId: 'ethereum', name: 'Ethereum', liquidityUsd: 450_000, volume24hUsd: 380_000, pairCount: 2 })
+  ],
+  cexMarkets: 0, cexVolume24hUsd: null, cgTotalVolume24hUsd: 780_000, platformsOnlyChains: [], topMarkets: []
+});
+check('mc4: fair share → no bias', !mcBalanced.biasDetected);
+check('mc4: lists the other chain', mcBalanced.otherChains.length === 1 && mcBalanced.otherChains[0].chain === 'Ethereum');
 
 console.log(`\n${fail === 0 ? '🎉 ALL PASS' : '⚠️ FAILURES'} — ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

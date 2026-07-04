@@ -26,6 +26,7 @@ export interface DsPair {
   fdv?: number;
   marketCap?: number;
   pairCreatedAt?: number; // ms epoch
+  info?: { imageUrl?: string; header?: string; openGraph?: string }; // curated token logo/branding
 }
 
 const get = async <T>(path: string): Promise<T | null> => {
@@ -39,6 +40,18 @@ const get = async <T>(path: string): Promise<T | null> => {
 /** All pairs for a token address (any chain — caller filters by chainId). */
 export const pairsForToken = async (address: string): Promise<DsPair[]> => {
   const d = await get<{ pairs: DsPair[] | null }>(`/latest/dex/tokens/${encodeURIComponent(address.trim())}`);
+  return d?.pairs ?? [];
+};
+
+/**
+ * All pairs for up to 30 token addresses in ONE call — used by Multi-Chain
+ * Context to fetch a token's markets across every chain it's deployed on
+ * (same or bridged addresses) without N separate requests.
+ */
+export const pairsForTokens = async (addresses: string[]): Promise<DsPair[]> => {
+  const list = [...new Set(addresses.map((a) => a.trim()).filter(Boolean))].slice(0, 30);
+  if (!list.length) return [];
+  const d = await get<{ pairs: DsPair[] | null }>(`/latest/dex/tokens/${list.map(encodeURIComponent).join(',')}`);
   return d?.pairs ?? [];
 };
 

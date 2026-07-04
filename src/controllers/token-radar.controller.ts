@@ -25,7 +25,11 @@ export const getChainsCtrl = asyncHandler(async (req, res) => {
   const limit = scanLimitFor(access);
   const used = limit === null ? 0 : (await scannedTokensToday(req.user!.sub)).size;
   return sendSuccess(res, 'Chains loaded.', {
-    chains: Object.values(CHAINS).map((c) => ({ slug: c.slug, name: c.name, native: c.nativeCurrency, type: c.type, status: c.status, popular: !!c.popular })),
+    chains: Object.values(CHAINS).map((c) => ({
+      slug: c.slug, name: c.name, native: c.nativeCurrency, type: c.type, status: c.status, popular: !!c.popular,
+      // Keyless chain logo (same DexScreener CDN pattern as the DEX icons).
+      icon: c.dexscreenerId ? `https://dd.dexscreener.com/ds-data/chains/${c.dexscreenerId}.png` : null
+    })),
     allowance: { limit, used, remaining: limit === null ? null : Math.max(0, limit - used) }
   });
 });

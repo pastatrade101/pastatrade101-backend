@@ -10,6 +10,7 @@ import { getHolderData } from './holderData.service';
 import { getExchangeListings, type ExchangeListingSummary } from './exchangeListing.service';
 import { getMarketRegimeSnapshot, type MarketRegimeSnapshot } from '../market-regime-engine/marketRegimeEngine.service';
 import { getChartIntelligence, type ChartIntelligenceResult } from './chartIntelligence.service';
+import { getMultiChainContext, type MultiChainContextResult } from './multiChainContextService';
 import { resolveCoingeckoId } from './exchangeListing.service';
 import { computeAnalysis, type MarketContext, type MarketData, type RiskWarning, type Rating, type Scores } from './scoringEngine';
 
@@ -29,11 +30,11 @@ export interface TokenReport {
   cached?: boolean;
   token: {
     name: string | null; symbol: string | null; chain: string; chain_name: string; address: string;
-    explorer_url: string; pair_url: string | null; dex: string | null;
+    logo: string | null; explorer_url: string; pair_url: string | null; dex: string | null;
     price: number | null; market_cap: number | null; fdv: number | null; liquidity: number | null;
     volume_24h: number | null; holders: number | null; age_days: number | null;
   };
-  holder: { count: number | null; source: string; confidence: string; verified: boolean; weight_used: number; used_in_final_score: boolean; warning?: string };
+  holder: { count: number | null; source: string; confidence: string; verified: boolean; weight_used: number; used_in_final_score: boolean; top10_percent: number | null; warning?: string };
   scores: Scores & { confidence: number };
   confidence: { data_availability: number; analysis_quality: number; combined: number; note: string };
   rating: Rating;
@@ -47,6 +48,7 @@ export interface TokenReport {
   exchanges: ExchangeListingSummary | null;
   market_regime: { label: string; score: number; summary: string; warnings: MarketRegimeSnapshot['warnings'] } | null;
   chart: ReportChart | null;
+  multi_chain: MultiChainContextResult | null;
   setup_type: string;
   disclaimer: string;
   created_at?: string;
@@ -152,12 +154,12 @@ const rowToReport = (row: any, chain: ChainConfig, cached: boolean): TokenReport
     cached,
     token: {
       name: row.token_name, symbol: row.token_symbol, chain: row.chain, chain_name: chain.name, address: row.token_address,
-      explorer_url: `${chain.explorerUrl}${row.token_address}`, pair_url: raw.pair_url ?? null, dex: raw.dex ?? null,
+      logo: raw.logo_url ?? null, explorer_url: `${chain.explorerUrl}${row.token_address}`, pair_url: raw.pair_url ?? null, dex: raw.dex ?? null,
       price: row.price != null ? Number(row.price) : null, market_cap: row.market_cap != null ? Number(row.market_cap) : null,
       fdv: row.fdv != null ? Number(row.fdv) : null, liquidity: row.liquidity != null ? Number(row.liquidity) : null,
       volume_24h: row.volume_24h != null ? Number(row.volume_24h) : null, holders: row.holders, age_days: row.age_days
     },
-    holder: { count: row.holders, source: row.holder_source ?? 'unknown', confidence: row.holder_confidence ?? 'low', verified: !!row.holder_verified, weight_used: raw.holder_weight ?? 0, used_in_final_score: !!raw.holder_used_in_final, warning: raw.holder_warning },
+    holder: { count: row.holders, source: row.holder_source ?? 'unknown', confidence: row.holder_confidence ?? 'low', verified: !!row.holder_verified, weight_used: raw.holder_weight ?? 0, used_in_final_score: !!raw.holder_used_in_final, top10_percent: raw.holder_top10 ?? null, warning: raw.holder_warning },
     scores: {
       opportunity: row.opportunity_score, risk: row.risk_score, momentum: row.momentum_score, liquidity: row.liquidity_score,
       holder_health: row.holder_health_score, contract_safety: row.contract_safety_score, timing: row.timing_score, confidence: row.confidence_score
@@ -165,7 +167,7 @@ const rowToReport = (row: any, chain: ChainConfig, cached: boolean): TokenReport
     confidence: { data_availability: row.data_availability_confidence ?? row.confidence_score ?? 0, analysis_quality: row.analysis_quality_confidence ?? row.confidence_score ?? 0, combined: row.confidence_score ?? 0, note: raw.confidence_note ?? '' },
     rating: row.final_rating, rating_explanation: row.rating_explanation ?? '', action_label: row.action_label,
     summary: row.summary, positives: row.positives ?? [], warnings: row.warnings ?? [], data_quality_warnings: row.data_quality_warnings ?? [],
-    timing_view: row.timing_view ?? '', exchanges: raw.exchanges ?? null, market_regime: raw.market_regime ?? null, chart: raw.chart ?? null, setup_type: raw.setup_type ?? 'Unknown setup', disclaimer: DISCLAIMER, created_at: row.created_at
+    timing_view: row.timing_view ?? '', exchanges: raw.exchanges ?? null, market_regime: raw.market_regime ?? null, chart: raw.chart ?? null, multi_chain: raw.multi_chain ?? null, setup_type: raw.setup_type ?? 'Unknown setup', disclaimer: DISCLAIMER, created_at: row.created_at
   };
 };
 
@@ -262,12 +264,15 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
   // Contract risk first (GoPlus) — reused as the free holder baseline so we don't
   // call GoPlus twice, and holder escalation (Moralis) only fires when needed.
   const security = await tokenSecurityDetail(chain.goplusNetwork ?? chain.slug, address).catch(() => null);
-  const [holder, market, exchanges, regimeSnap] = await Promise.all([
+  const [holder, market, exchanges, regimeSnap, multiChain] = await Promise.all([
     getHolderData(chain, address, { liquidityUsd: dex.liquidity_usd, marketCap: dex.market_cap }, security),
     marketContext(),
     getExchangeListings(chain, address).catch(() => null),
-    getMarketRegimeSnapshot().catch(() => null)
+    getMarketRegimeSnapshot().catch(() => null),
+    getMultiChainContext(chain, address, null).catch(() => null)
   ]);
+  // Multi-chain context is fetched in parallel; stamp the resolved holder count.
+  if (multiChain) multiChain.scannedChainMetrics.holders = holder.holders;
 
   const age_days = pair.pairCreatedAt ? Math.max(0, Math.floor((Date.now() - pair.pairCreatedAt) / 86_400_000)) : null;
   const regime = regimeSnap && regimeSnap.marketTimingLabel !== 'Unknown'
@@ -300,8 +305,10 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
       : null
   });
 
-  // Listing warnings fold into the data-quality list (deduped).
-  const data_quality_warnings = [...new Set([...a.data_quality_warnings, ...(exchanges?.warnings ?? [])])];
+  // Listing warnings + the multi-chain bias caveat fold into the data-quality
+  // list (deduped). The bias note is a context caveat — it warns that the
+  // scanned chain may understate the token, never that the token is riskier.
+  const data_quality_warnings = [...new Set([...a.data_quality_warnings, ...(exchanges?.warnings ?? []), ...(multiChain?.warning ? [multiChain.warning.message] : [])])];
   const liqOk = (dex.liquidity_usd ?? 0) >= 50_000;
   const chartStrong = !!chartResult && (chartResult.relativeStrengthVsBtc.status === 'outperforming_btc' || (chartResult.priceVsMa20 === 'above' && chartResult.priceVsMa50 === 'above'));
   const summary = buildSummary(a.rating, a.warnings, a.holder_meta.verified, holder.holders, liqOk, {
@@ -332,9 +339,9 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
     final_rating: a.rating, rating_explanation: a.rating_explanation, action_label: a.action_label, summary,
     positives: a.positives, warnings: a.warnings, data_quality_warnings, timing_view,
     raw_data: {
-      pair_url: pair.url, dex: pair.dexId, confidence_note: a.confidence.note,
-      holder_weight: a.holder_meta.weight_used, holder_used_in_final: a.holder_meta.used_in_final_score, holder_warning: a.holder_meta.warning,
-      exchanges, market_regime, chart: chartResult ? toReportChart(chartResult) : null, setup_type: a.setup_type, security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
+      pair_url: pair.url, dex: pair.dexId, logo_url: pair.info?.imageUrl ?? null, confidence_note: a.confidence.note,
+      holder_weight: a.holder_meta.weight_used, holder_used_in_final: a.holder_meta.used_in_final_score, holder_warning: a.holder_meta.warning, holder_top10: holder.top10_percent,
+      exchanges, market_regime, chart: chartResult ? toReportChart(chartResult) : null, multi_chain: multiChain, setup_type: a.setup_type, security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
     }
   };
   const { data: saved, error } = await supabase.from('token_analysis_reports').insert(row).select('*').maybeSingle();
