@@ -61,6 +61,9 @@ export interface AnalysisInput {
   // Market Regime Engine (optional): broader altcoin environment. Influences
   // timing/risk and can CAP the rating in a hostile regime — never upgrades.
   regime?: { env_score: number | null; label: string; warnings: RiskWarning[] } | null;
+  // Chart Intelligence (optional): historical structure scores. When present,
+  // Momentum = price action 30% + volume trend 25% + RS vs BTC 25% + breakout 20%.
+  chart?: { volume_trend_score: number; relative_strength_score: number; breakout_score: number } | null;
 }
 
 export interface Scores {
@@ -240,7 +243,13 @@ export const computeAnalysis = (i: AnalysisInput): AnalysisResult => {
 
   // ── Component scores ──
   const liquidity = liquidityScore(dex.liquidity_usd, dex.volume_24h);
-  const momentum = momentumScore(dex);
+  // Momentum: short-term price action, upgraded with Chart Intelligence when
+  // historical data exists (price action 30% + volume 25% + RS 25% + breakout 20%).
+  const baseMomentum = momentumScore(dex);
+  const momentum = i.chart
+    ? clamp(baseMomentum * 0.3 + i.chart.volume_trend_score * 0.25 + i.chart.relative_strength_score * 0.25 + i.chart.breakout_score * 0.2)
+    : baseMomentum;
+  if (!i.chart) warnings.push({ label: 'No Chart History', message: 'Historical chart data is unavailable, so chart intelligence was not included.', severity: 'low' });
   const holder_health = holderHealthScore(holder);
   const contract_safety = contractSafetyScore(i.security);
   const strength = marketStrengthScore(dex);

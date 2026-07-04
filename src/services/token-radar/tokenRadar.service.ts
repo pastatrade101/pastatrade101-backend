@@ -9,6 +9,8 @@ import { resolveToken, type ResolveResult } from './tokenResolver';
 import { getHolderData } from './holderData.service';
 import { getExchangeListings, type ExchangeListingSummary } from './exchangeListing.service';
 import { getMarketRegimeSnapshot, type MarketRegimeSnapshot } from '../market-regime-engine/marketRegimeEngine.service';
+import { getChartIntelligence, type ChartIntelligenceResult } from './chartIntelligence.service';
+import { resolveCoingeckoId } from './exchangeListing.service';
 import { computeAnalysis, type MarketContext, type MarketData, type RiskWarning, type Rating, type Scores } from './scoringEngine';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -44,9 +46,19 @@ export interface TokenReport {
   timing_view: string;
   exchanges: ExchangeListingSummary | null;
   market_regime: { label: string; score: number; summary: string; warnings: MarketRegimeSnapshot['warnings'] } | null;
+  chart: ReportChart | null;
   disclaimer: string;
   created_at?: string;
 }
+
+// Compact, storable form of ChartIntelligenceResult (candles → {t, c, v}).
+export interface ReportChart extends Omit<ChartIntelligenceResult, 'candles'> {
+  series: { t: string; c: number; v: number | null }[];
+}
+const toReportChart = (r: ChartIntelligenceResult): ReportChart => {
+  const { candles, ...rest } = r;
+  return { ...rest, series: candles.map((c) => ({ t: c.timestamp, c: c.close, v: c.volume })) };
+};
 
 const marketContext = async (): Promise<MarketContext> => {
   const [macro, riskRow, derivRow, alt] = await Promise.all([
@@ -123,7 +135,7 @@ const rowToReport = (row: any, chain: ChainConfig, cached: boolean): TokenReport
     confidence: { data_availability: row.data_availability_confidence ?? row.confidence_score ?? 0, analysis_quality: row.analysis_quality_confidence ?? row.confidence_score ?? 0, combined: row.confidence_score ?? 0, note: raw.confidence_note ?? '' },
     rating: row.final_rating, rating_explanation: row.rating_explanation ?? '', action_label: row.action_label,
     summary: row.summary, positives: row.positives ?? [], warnings: row.warnings ?? [], data_quality_warnings: row.data_quality_warnings ?? [],
-    timing_view: row.timing_view ?? '', exchanges: raw.exchanges ?? null, market_regime: raw.market_regime ?? null, disclaimer: DISCLAIMER, created_at: row.created_at
+    timing_view: row.timing_view ?? '', exchanges: raw.exchanges ?? null, market_regime: raw.market_regime ?? null, chart: raw.chart ?? null, disclaimer: DISCLAIMER, created_at: row.created_at
   };
 };
 
@@ -231,7 +243,23 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
   const regime = regimeSnap && regimeSnap.marketTimingLabel !== 'Unknown'
     ? { env_score: regimeSnap.altcoinEnvironmentScore, label: regimeSnap.marketTimingLabel as string, warnings: regimeSnap.warnings }
     : null;
-  const a = computeAnalysis({ dex, holder, security, age_days, market, input_type: resolved.input_type, listing_strength: exchanges?.listingStrengthScore ?? null, regime });
+
+  // Chart Intelligence — needs the listings (Binance guard) + CoinGecko id
+  // (cache-shared with the listings fetch), so it runs after the parallel block.
+  const hasBinanceListing = !!exchanges?.cexListings?.some((l) => /binance/i.test(l.exchangeName));
+  const coingeckoId = await resolveCoingeckoId(chain, address).catch(() => null);
+  const chartResult = await getChartIntelligence(chain, {
+    symbol: pair.baseToken.symbol ?? null,
+    coingeckoId,
+    poolAddress: pair.pairAddress ?? null,
+    hasBinanceListing
+  }).catch(() => null);
+
+  const a = computeAnalysis({
+    dex, holder, security, age_days, market, input_type: resolved.input_type,
+    listing_strength: exchanges?.listingStrengthScore ?? null, regime,
+    chart: chartResult ? { volume_trend_score: chartResult.volumeTrendScore, relative_strength_score: chartResult.relativeStrengthScore, breakout_score: chartResult.breakoutScore } : null
+  });
 
   // Listing warnings fold into the data-quality list (deduped).
   const data_quality_warnings = [...new Set([...a.data_quality_warnings, ...(exchanges?.warnings ?? [])])];
@@ -256,7 +284,7 @@ export const analyzeToken = async (chainSlug: string, input: string, userId: str
     raw_data: {
       pair_url: pair.url, dex: pair.dexId, confidence_note: a.confidence.note,
       holder_weight: a.holder_meta.weight_used, holder_used_in_final: a.holder_meta.used_in_final_score, holder_warning: a.holder_meta.warning,
-      exchanges, market_regime, security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
+      exchanges, market_regime, chart: chartResult ? toReportChart(chartResult) : null, security, market, price_change: pair.priceChange ?? {}, txns: pair.txns ?? {}
     }
   };
   const { data: saved, error } = await supabase.from('token_analysis_reports').insert(row).select('*').maybeSingle();

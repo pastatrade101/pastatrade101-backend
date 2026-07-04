@@ -6,6 +6,7 @@
 import { computeAnalysis, downgradeRating, type AnalysisInput, type MarketData } from '../services/token-radar/scoringEngine';
 import type { HolderDataResult } from '../services/token-radar/holderData.service';
 import type { TokenSecurityDetail } from '../services/sources/goplus.client';
+import { analyzeCandles, type HistoricalCandle } from '../services/token-radar/chartIntelligence.service';
 
 const sec = (o: Partial<TokenSecurityDetail>): TokenSecurityDetail => ({
   checked: true, is_honeypot: false, cannot_sell_all: false, buy_tax: 0, sell_tax: 0, is_open_source: true, is_proxy: false,
@@ -84,6 +85,32 @@ check('case8: explanation mentions market regime', hostile.rating_explanation.to
 const supportive = computeAnalysis({ ...goodInput, regime: { env_score: 80, label: 'Strong altcoin tailwind', warnings: [] } });
 check('case9: supportive regime lifts timing', (supportive.scores.timing ?? 0) > (noRegime.scores.timing ?? 0));
 check('case9: rating not artificially upgraded past Good/Strong', ['Good Watchlist Candidate', 'Strong Opportunity'].includes(supportive.rating));
+
+
+// ── Chart Intelligence (pure) ──
+const mkCandles = (closes: number[], vol: (i: number) => number | null): HistoricalCandle[] =>
+  closes.map((c, idx) => ({ timestamp: new Date(Date.UTC(2026, 0, 1) + idx * 86400000).toISOString(), open: c * 0.99, high: c * 1.02, low: c * 0.98, close: c, volume: vol(idx), source: 'binance' as const }));
+const up = Array.from({ length: 120 }, (_, idx) => 1 + idx * 0.01); // steady uptrend
+const down = Array.from({ length: 120 }, (_, idx) => 3 - idx * 0.015); // steady downtrend
+const btcFlat = Array.from({ length: 120 }, () => 100); // BTC flat → token trend = RS
+
+const bull = analyzeCandles(mkCandles(up, (idx) => 1000 * Math.pow(1.04, idx)), btcFlat, 'binance')!; // vol +~32%/wk → rising
+check('chart: uptrend+rising vol → bullish structure', bull.maStructure === 'bullish');
+check('chart: uptrend → outperforming BTC', bull.relativeStrengthVsBtc.status === 'outperforming_btc');
+check('chart: breakout score high', bull.breakoutScore >= 70);
+
+const bear = analyzeCandles(mkCandles(down, () => 10), btcFlat, 'coingecko')!;
+check('chart: downtrend → bearish structure', bear.maStructure === 'bearish');
+check('chart: inactive volume warning', bear.warnings.some((w) => w.label === 'Inactive Volume'));
+check('chart: underperforming BTC warning', bear.warnings.some((w) => w.label === 'Underperforming BTC'));
+
+check('chart: <7 candles → null (no crash)', analyzeCandles(mkCandles([1, 2, 3], () => 100), btcFlat, 'binance') === null);
+
+// Momentum blend: chart scores lift/depress momentum vs base
+const withChart = computeAnalysis({ ...goodInput, chart: { volume_trend_score: 80, relative_strength_score: 85, breakout_score: 80 } });
+const noChart = computeAnalysis(goodInput);
+check('chart: strong chart lifts momentum', (withChart.scores.momentum ?? 0) > (noChart.scores.momentum ?? 0));
+check('chart: missing chart adds low warning', noChart.warnings.some((w) => w.label === 'No Chart History'));
 
 console.log(`\n${fail === 0 ? '🎉 ALL PASS' : '⚠️ FAILURES'} — ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

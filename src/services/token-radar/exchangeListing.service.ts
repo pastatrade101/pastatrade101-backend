@@ -87,11 +87,23 @@ const trustOf = (score: unknown): ListingTrust | undefined =>
   score === 'green' ? 'high' : score === 'yellow' ? 'medium' : score === 'red' ? 'low' : undefined;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const fromCoingecko = async (chain: ChainConfig, address: string): Promise<ExchangeListing[]> => {
-  if (!chain.coingeckoPlatform) return [];
+/** Resolve a contract address to its CoinGecko coin id (cached 10 min; shared
+ * with Chart Intelligence so the lookup is never paid twice per scan). */
+const cgIdCache = new Map<string, { at: number; id: string | null }>();
+export const resolveCoingeckoId = async (chain: ChainConfig, address: string): Promise<string | null> => {
+  if (!chain.coingeckoPlatform) return null;
+  const key = `${chain.slug}:${address.toLowerCase()}`;
+  const hit = cgIdCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.id;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const coin = await cgGet<any>(`/coins/${chain.coingeckoPlatform}/contract/${address.toLowerCase()}`);
-  const id = coin?.id;
+  const id = typeof coin?.id === 'string' ? coin.id : null;
+  cgIdCache.set(key, { at: Date.now(), id });
+  return id;
+};
+
+const fromCoingecko = async (chain: ChainConfig, address: string): Promise<ExchangeListing[]> => {
+  const id = await resolveCoingeckoId(chain, address);
   if (!id) return [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const t = await cgGet<{ tickers: any[] }>(`/coins/${id}/tickers?depth=false&include_exchange_logo=true`);
