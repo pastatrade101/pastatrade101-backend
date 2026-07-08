@@ -487,6 +487,10 @@ export const adminRevenue = asyncHandler(async (_req, res) => {
     }, 0);
 
   const total = rows.reduce((s, r) => s + amt(r), 0);
+  // Distinct paying users across ALL completed payments (not just the returned page).
+  const paying_users = new Set(
+    rows.map((r) => (Array.isArray(r.user) ? r.user[0]?.email : (r.user as { email?: string } | null)?.email)).filter(Boolean)
+  ).size;
   const this_month = sum(startOfMonth);
   const last_month = sum(startOfLastMonth, startOfMonth);
   const growth_pct = last_month > 0 ? Math.round(((this_month - last_month) / last_month) * 100) : null;
@@ -526,7 +530,8 @@ export const adminRevenue = asyncHandler(async (_req, res) => {
       last_30d: sum(new Date(now.getTime() - 30 * dayMs)),
       this_month,
       last_month,
-      growth_pct
+      growth_pct,
+      paying_users
     },
     monthly,
     by_plan: groupBy('plan_slug'),
