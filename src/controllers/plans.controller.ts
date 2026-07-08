@@ -39,7 +39,7 @@ export const attachFeatures = async <T extends { id: string }>(plans: T[]) => {
 export const listPlans = asyncHandler(async (_req, res) => {
   const { data, error } = await supabase
     .from('plans')
-    .select('id, name, slug, description, badge, monthly_price, yearly_price, currency, billing_interval, is_popular, trial_days, sort_order')
+    .select('id, name, slug, description, tagline, badge, monthly_price, yearly_price, currency, billing_interval, is_popular, trial_days, sort_order')
     .eq('is_active', true)
     .eq('is_hidden', false)
     .eq('is_archived', false)
@@ -52,7 +52,7 @@ export const listPlans = asyncHandler(async (_req, res) => {
 export const getPlanBySlug = asyncHandler(async (req, res) => {
   const { data, error } = await supabase
     .from('plans')
-    .select('id, name, slug, description, badge, monthly_price, yearly_price, currency, billing_interval, is_popular, trial_days')
+    .select('id, name, slug, description, tagline, badge, monthly_price, yearly_price, currency, billing_interval, is_popular, trial_days')
     .eq('slug', req.params.slug)
     .eq('is_archived', false)
     .maybeSingle();
