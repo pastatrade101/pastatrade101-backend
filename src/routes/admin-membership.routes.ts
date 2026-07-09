@@ -23,14 +23,17 @@ import {
   adminUpsertFeature,
   adminUserMetrics
 } from '../controllers/admin-membership.controller';
+import { adminListOffers, adminCreateOffer, adminUpdateOffer, adminDeleteOffer } from '../controllers/offers.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { adminOnly } from '../middleware/role.middleware';
 import { validate } from '../middleware/validate.middleware';
 import {
+  createOfferSchema,
   createPlanSchema,
   extendSchema,
   featureSchema,
   followupSchema,
+  offerIdParam,
   paymentIdParam,
   planFeatureParams,
   planIdParam,
@@ -38,6 +41,7 @@ import {
   setUserStatusSchema,
   subscriptionIdParam,
   updateFeatureSchema,
+  updateOfferSchema,
   updatePlanSchema,
   userIdParam,
   userNoteSchema
@@ -56,6 +60,12 @@ router.put('/plans/:id', validate({ params: planIdParam, body: updatePlanSchema 
 router.delete('/plans/:id', validate({ params: planIdParam }), adminArchivePlan);
 router.post('/plans/:id/features', validate({ params: planIdParam, body: featureSchema }), adminUpsertFeature);
 router.put('/plans/:id/features/:featureId', validate({ params: planFeatureParams, body: updateFeatureSchema }), adminUpdateFeature);
+
+// Pricing offers (temporary discounts) — never mutate the real plan price.
+router.get('/offers', adminListOffers);
+router.post('/offers', validate({ body: createOfferSchema }), adminCreateOffer);
+router.patch('/offers/:id', validate({ params: offerIdParam, body: updateOfferSchema }), adminUpdateOffer);
+router.delete('/offers/:id', validate({ params: offerIdParam }), adminDeleteOffer);
 
 // Users — /users/metrics must precede /users/:id so it isn't captured as an id.
 router.get('/users', adminListUsers);

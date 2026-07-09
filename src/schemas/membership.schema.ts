@@ -75,3 +75,17 @@ export const userIdParam = z.object({ id: z.string().uuid() });
 export const subscriptionIdParam = z.object({ id: z.string().uuid() });
 export const paymentIdParam = z.object({ id: z.string().uuid() });
 export const slugParam = z.object({ slug: z.string().min(1).max(40) });
+
+// ── Pricing offers (temporary discounts) ─────────────────────────────────────
+export const createOfferSchema = z.object({
+  plan_id: z.string().uuid(),
+  billing_interval: z.enum(['monthly', 'yearly']).default('monthly'),
+  offer_price: z.number().min(0),
+  original_price: z.number().min(0),
+  offer_label: z.string().min(1).max(60),
+  starts_at: z.string().min(1),
+  ends_at: z.string().min(1),
+  is_active: z.boolean().optional()
+});
+export const updateOfferSchema = createOfferSchema.partial();
+export const offerIdParam = z.object({ id: z.string().uuid() });

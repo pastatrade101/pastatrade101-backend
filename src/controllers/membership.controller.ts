@@ -3,6 +3,7 @@ import { allowedOrigins } from '../config/env';
 import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { resolveUserAccess } from '../services/membership/plan-access';
+import { getActiveOfferForPlan } from '../services/membership/offers.service';
 import { getUsage } from '../services/membership/usage.service';
 import { assignPlan, cancelSubscription } from '../services/membership/subscription.service';
 import { getPaymentProvider } from '../services/payments';
@@ -78,7 +79,11 @@ export const requestUpgrade = asyncHandler(async (req, res) => {
     );
   }
 
-  const amount = interval === 'yearly' ? Number(plan.yearly_price) : Number(plan.monthly_price);
+  let amount = interval === 'yearly' ? Number(plan.yearly_price) : Number(plan.monthly_price);
+  // Apply a live pricing offer at PAYMENT time — never trust the frontend price
+  // or its countdown. If the offer has ended, the normal price is charged.
+  const offer = await getActiveOfferForPlan(plan.id, interval);
+  if (offer && Number(offer.offer_price) < amount) amount = Number(offer.offer_price);
   const provider = getPaymentProvider();
 
   // Paid plan + provider available → hosted checkout.
@@ -105,7 +110,15 @@ export const requestUpgrade = asyncHandler(async (req, res) => {
       provider: provider.name,
       event_type: 'checkout_created',
       status: 'pending',
-      event_payload: { reference: checkout.reference, plan_slug, interval, amount, currency: plan.currency, phone: phoneNumber ?? null }
+      event_payload: {
+        reference: checkout.reference,
+        plan_slug,
+        interval,
+        amount,
+        currency: plan.currency,
+        phone: phoneNumber ?? null,
+        offer_applied: offer ? { label: offer.offer_label, offer_price: offer.offer_price, original_price: offer.original_price } : null
+      }
     });
     // Track the attempt so admins can follow up if it's abandoned / fails.
     await supabase.from('payment_attempts').insert({
