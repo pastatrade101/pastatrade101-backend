@@ -55,6 +55,19 @@ const hash = (s: string): string => {
   return h.toString(36);
 };
 
+// The usable signals + their rendered "facts" summary. Shared so the cache key
+// (per lang) and the per-user charge dedupe (data-only) hash the same content.
+const buildFacts = (signals: SignalInput[]): { usable: SignalInput[]; facts: string; hash: string } => {
+  const usable = (signals ?? []).filter((s) => s?.name && s?.label && String(s.label).toLowerCase() !== 'unavailable');
+  const facts = usable
+    .map((s) => `- ${s.name}: ${s.label}${s.value != null && s.value !== '' ? ` (${s.value})` : ''}${s.meaning ? ` — ${s.meaning}` : ''}`)
+    .join('\n');
+  return { usable, facts, hash: hash(facts) };
+};
+
+/** Stable hash of a module's usable data — the unit a user is charged once for. */
+export const factsHashFor = (signals: SignalInput[]): string => buildFacts(signals).hash;
+
 export const interpretModule = async (opts: {
   module: string;
   title: string;
@@ -63,13 +76,10 @@ export const interpretModule = async (opts: {
 }): Promise<Interpretation | null> => {
   if (!anthropic) return null;
 
-  const usable = (opts.signals ?? []).filter((s) => s?.name && s?.label && String(s.label).toLowerCase() !== 'unavailable');
+  const { usable, facts, hash: factsHash } = buildFacts(opts.signals);
   if (!usable.length) return null;
 
-  const facts = usable
-    .map((s) => `- ${s.name}: ${s.label}${s.value != null && s.value !== '' ? ` (${s.value})` : ''}${s.meaning ? ` — ${s.meaning}` : ''}`)
-    .join('\n');
-  const key = `${opts.lang}|${opts.module}|${hash(facts)}`;
+  const key = `${opts.lang}|${opts.module}|${factsHash}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.v;
 

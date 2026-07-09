@@ -42,9 +42,12 @@ export const usageForLimit = async (userId: string, limitKey: string): Promise<n
   return usage[field];
 };
 
+/** First-of-month timestamp used to bucket monthly usage + charges. */
+const monthStart = (): string => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+
 /** How many times a counter-style feature was used in the current month. */
 export const countUsageThisMonth = async (userId: string, featureKey: string): Promise<number> => {
-  const periodStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  const periodStart = monthStart();
   const { data } = await supabase
     .from('usage_limits')
     .select('used_count')
@@ -57,7 +60,7 @@ export const countUsageThisMonth = async (userId: string, featureKey: string): P
 
 /** Increment a counter-style feature's usage in the current period (best-effort). */
 export const incrementUsage = async (userId: string, featureKey: string): Promise<void> => {
-  const periodStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  const periodStart = monthStart();
   const { data: existing } = await supabase
     .from('usage_limits')
     .select('id, used_count')
@@ -70,4 +73,29 @@ export const incrementUsage = async (userId: string, featureKey: string): Promis
   } else {
     await supabase.from('usage_limits').insert({ user_id: userId, feature_key: featureKey, used_count: 1, period_start: periodStart });
   }
+};
+
+// ── AI "charge once per unique read" dedupe ────────────────────────────────
+// A credit is spent the first time a user interprets a module's EXACT data
+// (facts_hash) in a given month. Re-viewing / refreshing the same data is free;
+// only a data change (new hash) costs another credit. Backed by ai_read_charges.
+
+/** True if this user already spent a credit on this module's exact data this month. */
+export const hasChargedRead = async (userId: string, module: string, factsHash: string): Promise<boolean> => {
+  const periodStart = monthStart();
+  const { data } = await supabase
+    .from('ai_read_charges')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('module', module)
+    .eq('facts_hash', factsHash)
+    .eq('period_start', periodStart)
+    .maybeSingle();
+  return !!data;
+};
+
+/** Record that this user paid for this module's exact data this month (best-effort; unique-safe). */
+export const recordChargedRead = async (userId: string, module: string, factsHash: string): Promise<void> => {
+  const periodStart = monthStart();
+  await supabase.from('ai_read_charges').insert({ user_id: userId, module, facts_hash: factsHash, period_start: periodStart });
 };
