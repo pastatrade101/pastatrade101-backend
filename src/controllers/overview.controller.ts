@@ -4,6 +4,7 @@ import { AppError, sendSuccess } from '../utils/api-response';
 import { getQueryString } from '../utils/query';
 import { canAccess, resolveUserAccess } from '../services/membership/plan-access';
 import { buildOverview, type Universe } from '../services/overview/overview.service';
+import { generateMarketRead } from '../services/ai/marketRead.service';
 
 // GET /api/v1/overview?universe=clean|all — the daily market command center.
 export const getOverview = asyncHandler(async (req: Request, res: Response) => {
@@ -32,4 +33,28 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
     payload.daily_market_read = `${data.daily_market_read.split('. ')[0]}.`;
   }
   return sendSuccess(res, 'Overview fetched successfully.', payload);
+});
+
+// GET /api/v1/overview/market-read?lang=en|sw — premium AI synthesis of the same
+// signals. Fetched separately so the LLM latency never blocks the dashboard, and
+// returns { read: null } (rather than erroring) whenever the feature is off, the
+// user isn't premium, or the model is unavailable — the UI then shows the
+// deterministic rule-based verdict. The synthesis interprets the app's computed
+// signals; it never produces the numbers.
+export const getMarketRead = asyncHandler(async (req: Request, res: Response) => {
+  const lang = getQueryString(req.query, 'lang') === 'sw' ? 'sw' : 'en';
+  const access = await resolveUserAccess(req.user!.sub);
+  if (!canAccess(access, 'access_premium_interpretation')) {
+    return sendSuccess(res, 'Premium AI read is not available on this plan.', { read: null });
+  }
+
+  let data;
+  try {
+    data = await buildOverview({ universe: 'clean', isPaid: true });
+  } catch {
+    return sendSuccess(res, 'Market data unavailable.', { read: null });
+  }
+
+  const read = await generateMarketRead(data.signals, data.market_condition, lang);
+  return sendSuccess(res, 'Market read fetched successfully.', { read });
 });
