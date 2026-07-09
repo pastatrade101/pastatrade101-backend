@@ -1,10 +1,15 @@
-import { loginUser, registerUser } from '../services/auth.service';
+import { googleAuth, loginUser, registerUser } from '../services/auth.service';
 import { asyncHandler } from '../utils/async-handler';
 import { sendSuccess } from '../utils/api-response';
 
 export const register = asyncHandler(async (req, res) => {
   const result = await registerUser(req.body.email, req.body.password, req.body.full_name);
   return sendSuccess(res, 'Registration successful.', result, 201);
+});
+
+export const google = asyncHandler(async (req, res) => {
+  const result = await googleAuth(req.body.credential);
+  return sendSuccess(res, 'Google sign-in successful.', result);
 });
 
 export const login = asyncHandler(async (req, res) => {

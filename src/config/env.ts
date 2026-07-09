@@ -16,6 +16,9 @@ const envSchema = z.object({
     .min(16, 'JWT_SECRET must be at least 16 characters long')
     .default('development-only-change-this-secret'),
   JWT_EXPIRES_IN: z.string().default('7d'),
+  // Google Sign-In — OAuth client ID (public). Used as the audience when
+  // verifying the ID token. Blank → falls back to the baked-in public client id.
+  GOOGLE_CLIENT_ID: z.string().optional().or(z.literal('')),
 
   // Payments — Snippe (mobile money / card / QR). Blank → provider disabled, so
   // upgrades fall back to manual admin activation.
