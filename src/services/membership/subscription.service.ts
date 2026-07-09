@@ -25,6 +25,10 @@ export interface AssignPlanInput {
   provider?: string;
   current_period_start?: string | null;
   current_period_end?: string | null;
+  // When true (and no explicit current_period_end is given), any time still left
+  // on the user's current plan is added on top of the new period. So a Mid user
+  // with 12 days left who upgrades to Premium gets 30 + 12 = 42 days of Premium.
+  carryOverRemaining?: boolean;
   note?: string | null;
 }
 
@@ -33,6 +37,24 @@ export const assignPlan = async (userId: string, input: AssignPlanInput) => {
   const planId = input.planId ?? (input.planSlug ? await planIdForSlug(input.planSlug) : null);
   if (!planId) throw new Error('Unknown plan.');
   const status = input.status ?? 'active';
+
+  // Carry over unused time from the current plan. Read it BEFORE the supersede
+  // below wipes it. Never let an already-expired end shorten the new period.
+  let periodEnd = input.current_period_end ?? null;
+  if (input.carryOverRemaining && !input.current_period_end) {
+    const { data: prev } = await supabase
+      .from('subscriptions')
+      .select('current_period_end')
+      .eq('user_id', userId)
+      .in('status', ['active', 'trialing', 'past_due', 'manual'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const days = input.billing_interval === 'yearly' ? 365 : 30;
+    const prevEnd = prev?.current_period_end ? new Date(prev.current_period_end).getTime() : 0;
+    const base = Math.max(prevEnd, Date.now());
+    periodEnd = new Date(base + days * 86_400_000).toISOString();
+  }
 
   // Retire any existing live subscriptions first so a user only ever has ONE
   // active row (the signup `system` free row + each assignment used to stack up
@@ -51,7 +73,7 @@ export const assignPlan = async (userId: string, input: AssignPlanInput) => {
     billing_interval: input.billing_interval ?? 'manual',
     provider: input.provider ?? 'manual',
     current_period_start: input.current_period_start ?? new Date().toISOString(),
-    current_period_end: input.current_period_end ?? null,
+    current_period_end: periodEnd,
     note: input.note ?? null
   });
   await supabase.from('users').update({ plan_id: planId, subscription_status: status }).eq('id', userId);

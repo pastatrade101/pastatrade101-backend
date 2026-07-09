@@ -4,8 +4,6 @@ import { asyncHandler } from '../utils/async-handler';
 import { getPaymentProvider } from '../services/payments';
 import { assignPlan } from '../services/membership/subscription.service';
 
-const addDays = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString();
-
 // POST /api/v1/payments/webhook/snippe — public; authenticated by HMAC signature.
 // Verifies, records to payment_events, and on payment.completed activates the
 // subscription. Idempotent on the provider event id.
@@ -66,7 +64,8 @@ export const snippeWebhook = asyncHandler(async (req: Request, res: Response) =>
         provider: 'snippe',
         billing_interval: interval,
         current_period_start: new Date().toISOString(),
-        current_period_end: addDays(interval === 'yearly' ? 365 : 30),
+        // Add any unused time from the current plan onto the new period.
+        carryOverRemaining: true,
         note: `Activated via Snippe (${event.reference})`
       });
     }

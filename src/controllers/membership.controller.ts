@@ -7,13 +7,22 @@ import { getUsage } from '../services/membership/usage.service';
 import { assignPlan, cancelSubscription } from '../services/membership/subscription.service';
 import { getPaymentProvider } from '../services/payments';
 
-const addDaysIso = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString();
-
 // GET /api/v1/me/features — the plan access summary the frontend gates on.
 export const getMyFeatures = asyncHandler(async (req, res) => {
   const access = await resolveUserAccess(req.user!.sub);
   const usage = await getUsage(req.user!.sub);
   const { data: prof } = await supabase.from('users').select('phone').eq('id', req.user!.sub).maybeSingle();
+  // Period end drives the "your remaining days carry over on upgrade" message.
+  const { data: sub } = await supabase
+    .from('subscriptions')
+    .select('current_period_end')
+    .eq('user_id', req.user!.sub)
+    .in('status', ['active', 'trialing', 'past_due', 'manual'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const periodEnd = (sub?.current_period_end as string | null) ?? null;
+  const daysLeft = periodEnd ? Math.max(0, Math.ceil((new Date(periodEnd).getTime() - Date.now()) / 86_400_000)) : null;
   return sendSuccess(res, 'Plan access fetched successfully.', {
     plan: access.plan.slug,
     plan_name: access.plan.name,
@@ -21,6 +30,8 @@ export const getMyFeatures = asyncHandler(async (req, res) => {
     status: access.status,
     is_admin: access.isAdmin,
     phone: prof?.phone ?? null,
+    current_period_end: periodEnd,
+    days_left: daysLeft,
     features: access.features,
     limits: access.limits,
     usage: { watchlist_items: usage.watchlist_items, alerts: usage.alerts }
@@ -151,7 +162,8 @@ export const verifyMyPayment = asyncHandler(async (req, res) => {
     provider: provider.name,
     billing_interval: interval,
     current_period_start: new Date().toISOString(),
-    current_period_end: addDaysIso(interval === 'yearly' ? 365 : 30),
+    // Add any unused time from the current plan onto the new period.
+    carryOverRemaining: true,
     note: `Activated via self-verify (${attempt.reference})`
   });
   await supabase.from('payment_attempts').update({ status: 'completed', updated_at: new Date().toISOString() }).eq('id', attempt.id);
