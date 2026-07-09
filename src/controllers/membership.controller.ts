@@ -47,8 +47,25 @@ export const requestUpgrade = asyncHandler(async (req, res) => {
   const { plan_slug, billing_interval, phone } = req.body as { plan_slug: string; billing_interval?: 'monthly' | 'yearly'; phone?: string };
   const interval = billing_interval === 'yearly' ? 'yearly' : 'monthly';
 
-  const { data: plan } = await supabase.from('plans').select('id, name, monthly_price, yearly_price, currency').eq('slug', plan_slug).maybeSingle();
+  const { data: plan } = await supabase.from('plans').select('id, slug, name, monthly_price, yearly_price, currency').eq('slug', plan_slug).maybeSingle();
   if (!plan) throw new AppError('Plan not found.', 404);
+
+  // Guard: an already-subscribed user must not be able to pay again for the same
+  // plan (or a lower tier). Renewals are only allowed once the plan is no longer
+  // active (expired / cancelled / past_due / suspended); upgrades to a higher
+  // tier still pass. Compared on monthly price so interval choice can't bypass it.
+  const access = await resolveUserAccess(req.user!.sub);
+  const activeStatuses = new Set(['active', 'trialing', 'manual']);
+  const currentMonthly = Number(access.plan.monthly_price) || 0;
+  const targetMonthly = Number(plan.monthly_price) || 0;
+  if (activeStatuses.has(access.status) && currentMonthly > 0 && targetMonthly <= currentMonthly) {
+    throw new AppError(
+      plan.slug === access.plan.slug
+        ? `You are already subscribed to ${plan.name}.`
+        : `Your ${access.plan.name} plan already covers ${plan.name} — no payment needed.`,
+      400
+    );
+  }
 
   const amount = interval === 'yearly' ? Number(plan.yearly_price) : Number(plan.monthly_price);
   const provider = getPaymentProvider();
