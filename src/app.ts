@@ -45,6 +45,7 @@ import riskRoutes from './routes/risk.routes';
 import socialMetricsRoutes from './routes/social-metrics.routes';
 import statsRoutes from './routes/stats.routes';
 import watchlistRoutes from './routes/watchlist.routes';
+import aiRoutes from './routes/ai.routes';
 import { sendSuccess } from './utils/api-response';
 
 const app = express();
@@ -124,6 +125,7 @@ app.use('/api/v1/youtube', youtubeRoutes);
 app.use('/api/v1/stats', statsRoutes);
 app.use('/api/v1/insights', insightsRoutes);
 app.use('/api/v1/me', membershipRoutes);
+app.use('/api/v1/ai', aiRoutes);
 app.use('/api/v1/payments', paymentsRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/admin', adminMembershipRoutes);

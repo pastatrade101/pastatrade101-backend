@@ -42,6 +42,19 @@ export const usageForLimit = async (userId: string, limitKey: string): Promise<n
   return usage[field];
 };
 
+/** How many times a counter-style feature was used in the current month. */
+export const countUsageThisMonth = async (userId: string, featureKey: string): Promise<number> => {
+  const periodStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  const { data } = await supabase
+    .from('usage_limits')
+    .select('used_count')
+    .eq('user_id', userId)
+    .eq('feature_key', featureKey)
+    .eq('period_start', periodStart)
+    .maybeSingle();
+  return (data?.used_count as number | undefined) ?? 0;
+};
+
 /** Increment a counter-style feature's usage in the current period (best-effort). */
 export const incrementUsage = async (userId: string, featureKey: string): Promise<void> => {
   const periodStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();

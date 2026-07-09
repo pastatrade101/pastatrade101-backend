@@ -4,7 +4,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { resolveUserAccess } from '../services/membership/plan-access';
 import { getActiveOfferForPlan } from '../services/membership/offers.service';
-import { getUsage } from '../services/membership/usage.service';
+import { getUsage, countUsageThisMonth } from '../services/membership/usage.service';
 import { assignPlan, cancelSubscription } from '../services/membership/subscription.service';
 import { getPaymentProvider } from '../services/payments';
 
@@ -24,6 +24,7 @@ export const getMyFeatures = asyncHandler(async (req, res) => {
     .maybeSingle();
   const periodEnd = (sub?.current_period_end as string | null) ?? null;
   const daysLeft = periodEnd ? Math.max(0, Math.ceil((new Date(periodEnd).getTime() - Date.now()) / 86_400_000)) : null;
+  const aiUsed = await countUsageThisMonth(req.user!.sub, 'ai_interpretations');
   return sendSuccess(res, 'Plan access fetched successfully.', {
     plan: access.plan.slug,
     plan_name: access.plan.name,
@@ -35,7 +36,7 @@ export const getMyFeatures = asyncHandler(async (req, res) => {
     days_left: daysLeft,
     features: access.features,
     limits: access.limits,
-    usage: { watchlist_items: usage.watchlist_items, alerts: usage.alerts }
+    usage: { watchlist_items: usage.watchlist_items, alerts: usage.alerts, ai_interpretations: aiUsed }
   });
 });
 
