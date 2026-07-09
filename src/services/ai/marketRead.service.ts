@@ -84,13 +84,17 @@ export const generateMarketRead = async (
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.read;
 
-  const langLine = lang === 'sw' ? 'Write everything in clear, natural Swahili (Kiswahili).' : 'Write everything in clear English.';
+  // The output-language directive lives at the END of the user message — the
+  // strongest lever for output language — not buried in the (English) system
+  // prompt, where the model tended to keep replying in English regardless.
+  const langName = lang === 'sw' ? 'Swahili (Kiswahili)' : 'English';
 
   try {
     const res = await client.messages.create({
       model: MODEL,
       max_tokens: 700,
-      system: [{ type: 'text', text: `${SYSTEM}\n\n${langLine}`, cache_control: { type: 'ephemeral' } }],
+      // Stable rules only → cache prefix stays identical across languages.
+      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       output_config: { format: { type: 'json_schema', schema: SCHEMA } } as any,
       messages: [
@@ -100,7 +104,8 @@ export const generateMarketRead = async (
             `Overall market condition (from the app): ${marketCondition?.label ?? 'Unknown'}.\n` +
             `Signals:\n` +
             usable.map((s) => `- ${s.name}: ${s.label}${s.value ? ` (${s.value})` : ''} — ${s.meaning}`).join('\n') +
-            `\n\nWrite the market-today read now.`
+            `\n\nWrite the market-today read now. CRITICAL: write BOTH the "headline" and "body" entirely in ${langName}. ` +
+            (lang === 'sw' ? 'Andika kwa Kiswahili sanifu — usitumie Kiingereza kabisa.' : 'Use natural, plain English.')
         }
       ]
     });
