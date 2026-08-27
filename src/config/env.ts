@@ -28,6 +28,16 @@ const envSchema = z.object({
   // Public URL of THIS backend — used to build the Snippe webhook callback URL.
   PUBLIC_API_URL: z.string().url().default('http://localhost:5050'),
 
+  // WhatsApp notifications — delivered through Makutano Connect, which owns the
+  // number, the templates and Meta compliance. Blank key → the whole notifier is
+  // inert: rules can be edited, nothing is ever sent. Same shape as the payment
+  // and AI keys above.
+  CONNECT_API_URL: z.string().url().default('https://connect.makutano.co.tz'),
+  CONNECT_API_KEY: z.string().optional().or(z.literal('')),
+  // A hard ceiling the admin panel cannot raise, so a mis-set rule cannot mail
+  // the entire member list in one tick.
+  WHATSAPP_MAX_PER_RUN: z.coerce.number().default(200),
+
   // External data sources
   COINGECKO_API_KEY: z.string().optional().or(z.literal('')),
   // On-chain metrics — BGeometrics / bitcoin-data.com (free tier). Key is

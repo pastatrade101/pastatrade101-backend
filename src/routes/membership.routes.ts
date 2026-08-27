@@ -13,6 +13,8 @@ import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { cancelAttemptSchema, upgradeSchema } from '../schemas/membership.schema';
 
+import { getMyWhatsappPreference, updateMyWhatsappPreference } from '../controllers/whatsapp-optin.controller';
+
 const router = Router();
 
 // All /me routes require a signed-in user.
@@ -26,5 +28,9 @@ router.post('/verify-payment', verifyMyPayment);
 router.post('/cancel-subscription', cancelMySubscription);
 router.get('/payment-attempts/pending', getMyPendingAttempt);
 router.post('/payment-attempts/cancel', validate({ body: cancelAttemptSchema }), cancelMyAttempt);
+
+// WhatsApp alerts — the member's own consent, with the number to reach them on.
+router.get('/whatsapp', getMyWhatsappPreference);
+router.put('/whatsapp', updateMyWhatsappPreference);
 
 export default router;

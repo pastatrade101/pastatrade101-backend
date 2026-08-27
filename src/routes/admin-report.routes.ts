@@ -15,6 +15,14 @@ import {
   adminUpdateTemplate,
   adminDeleteTemplate
 } from '../controllers/admin-report.controller';
+import {
+  adminNotificationStatus,
+  adminUpdateNotificationRule,
+  adminPreviewAudience,
+  adminSendAnnouncement,
+  adminSendMarketAlert,
+  adminListNotificationBatches
+} from '../controllers/admin-notifications.controller';
 
 const router = Router();
 router.use(authenticate, adminOnly);
@@ -33,5 +41,14 @@ router.get('/report-templates', adminListTemplates);
 router.post('/report-templates', adminCreateTemplate);
 router.put('/report-templates/:id', adminUpdateTemplate);
 router.delete('/report-templates/:id', adminDeleteTemplate);
+
+
+// ── WhatsApp notifications (through Makutano Connect) ──
+router.get('/notifications', adminNotificationStatus);
+router.get('/notifications/history', adminListNotificationBatches);
+router.get('/notifications/rules/:key/audience', adminPreviewAudience);
+router.put('/notifications/rules/:key', adminUpdateNotificationRule);
+router.post('/notifications/announce', adminSendAnnouncement);
+router.post('/notifications/market-alert', adminSendMarketAlert);
 
 export default router;

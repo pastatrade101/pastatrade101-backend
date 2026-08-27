@@ -7,6 +7,7 @@ import { getQueryString } from '../utils/query';
 import { generateDraft, getReportWithSections, updateReport, publishReport, archiveReport, buildShareExport, type ExportType } from '../services/reports/reportPublisher.service';
 import type { ReportType } from '../services/reports/reportData.service';
 import type { Audience, Language, Tone } from '../services/reports/reportGenerator.service';
+import { notifyReportPublished } from '../services/notifications/triggers.service';
 
 // Admin report management: generate, edit, publish, archive, export + templates.
 // Mounted under /api/v1/admin (admin-only middleware applied by the router).
@@ -78,6 +79,18 @@ export const adminUpdateReport = asyncHandler(async (req: Request, res: Response
 
 export const adminPublishReport = asyncHandler(async (req: Request, res: Response) => {
   const data = await publishReport(req.params.id, req.user!.sub);
+
+  // Tell the members who asked to be told. Deliberately after the publish has
+  // succeeded and deliberately not awaited into the response: a WhatsApp fan-out
+  // to a few hundred people must never make an admin sit and watch a spinner, or
+  // worse, fail the publish it was only meant to announce.
+  const notify = (data as { report?: { id: string; slug: string | null; report_type: string; market_status?: { regime?: string } | null } })?.report;
+  if (notify) {
+    void notifyReportPublished(notify, req.user!.sub).catch((error: unknown) => {
+      console.error('[notifications] report announcement failed:', error instanceof Error ? error.message : error);
+    });
+  }
+
   return sendSuccess(res, 'Report published successfully.', data);
 });
 
