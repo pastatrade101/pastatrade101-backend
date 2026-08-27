@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { supabase } from '../config/supabase';
 import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
+import { recordContactEvent } from '../services/notifications/connect.client';
 
 // A member turning WhatsApp alerts on or off for themselves.
 //
@@ -61,6 +62,32 @@ export const updateMyWhatsappPreference = asyncHandler(async (req: Request, res:
     })
     .eq('id', req.user!.sub);
   if (error) throw new AppError('Unable to update your notification settings.', 500, [error]);
+
+  // Put the new subscriber in front of a human: a contact and a line in the
+  // WhatsApp inbox, and a push to whoever is watching it. Deliberately not
+  // awaited — a member turning on alerts must never wait on our own plumbing,
+  // and must never see it fail.
+  void (async () => {
+    const { data: person } = await supabase
+      .from('users')
+      .select('full_name, email')
+      .eq('id', req.user!.sub)
+      .single();
+    const row = (person ?? {}) as { full_name?: string | null; email?: string | null };
+    const [first, ...rest] = String(row.full_name ?? '').trim().split(/\s+/);
+    await recordContactEvent({
+      phone: number,
+      firstName: first || null,
+      lastName: rest.join(' ') || null,
+      email: row.email ?? null,
+      title: 'New WhatsApp subscriber',
+      note: `${row.full_name || row.email || 'A member'} turned on WhatsApp report alerts.`,
+      // One record per member per opt-in day, however many times they toggle.
+      idempotencyKey: `optin:${req.user!.sub}:${new Date().toISOString().slice(0, 10)}`
+    });
+  })().catch((error: unknown) => {
+    console.error('[notifications] opt-in notice failed:', error instanceof Error ? error.message : error);
+  });
 
   return sendSuccess(res, 'WhatsApp alerts turned on.', { enabled: true, number });
 });

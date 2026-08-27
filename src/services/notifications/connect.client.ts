@@ -111,3 +111,44 @@ export const listTemplates = async (): Promise<Array<{ name: string; language: s
     return [];
   }
 };
+
+
+/**
+ * Tell Connect that something happened with a person — they opted in, they left.
+ *
+ * This creates a contact and a note in the WhatsApp inbox and buzzes whoever is
+ * watching it. It sends nothing to the member: the endpoint has no path to Meta,
+ * which is what makes it safe to call on an event the member triggered themselves.
+ */
+export const recordContactEvent = async (input: {
+  phone: string;
+  note: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  email?: string | null;
+  title?: string;
+  idempotencyKey: string;
+}): Promise<SendResult> => {
+  if (!isConnectConfigured()) return { ok: false, code: 'NOT_CONFIGURED' };
+  try {
+    const res = await post(
+      '/api/v1/contact-events',
+      {
+        phone: input.phone,
+        note: input.note,
+        firstName: input.firstName ?? undefined,
+        lastName: input.lastName ?? undefined,
+        email: input.email ?? undefined,
+        title: input.title
+      },
+      input.idempotencyKey
+    );
+    if (!res.ok) {
+      const payload = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
+      return { ok: false, code: payload.error?.code ?? `HTTP_${res.status}`, error: payload.error?.message };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, code: 'NETWORK', error: error instanceof Error ? error.message : String(error) };
+  }
+};
