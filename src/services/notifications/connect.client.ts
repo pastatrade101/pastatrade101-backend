@@ -152,3 +152,48 @@ export const recordContactEvent = async (input: {
     return { ok: false, code: 'NETWORK', error: error instanceof Error ? error.message : String(error) };
   }
 };
+
+
+/**
+ * Mirror a completed subscription payment into Connect.
+ *
+ * Connect's dashboard and phone app answer "how did today go" from its own
+ * payments table. Without this, a business whose money arrives through its own
+ * checkout sees a permanent zero there — technically accurate, completely
+ * useless. Recording the payment makes the number real.
+ *
+ * Best-effort by design: money is already taken and the member is already
+ * activated by the time this runs. A reporting mirror must never be able to
+ * fail a payment.
+ */
+export const recordRevenue = async (input: {
+  amount: number | string;
+  currency: string;
+  description: string;
+  /** Connect customer id, when the payer is already a contact there. */
+  customerId?: string | null;
+  idempotencyKey: string;
+}): Promise<SendResult> => {
+  if (!isConnectConfigured()) return { ok: false, code: 'NOT_CONFIGURED' };
+  try {
+    const res = await post(
+      '/api/v1/payments',
+      {
+        amount: Number(input.amount).toFixed(2),
+        currency: input.currency.toUpperCase().slice(0, 3),
+        description: input.description.slice(0, 500),
+        provider: 'MANUAL',
+        ...(input.customerId ? { customerId: input.customerId } : {}),
+        metadata: { source: 'pastatrade', recordedAt: new Date().toISOString() }
+      },
+      input.idempotencyKey
+    );
+    if (!res.ok) {
+      const payload = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
+      return { ok: false, code: payload.error?.code ?? `HTTP_${res.status}`, error: payload.error?.message };
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, code: 'NETWORK', error: error instanceof Error ? error.message : String(error) };
+  }
+};

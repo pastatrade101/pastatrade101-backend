@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { supabase } from '../config/supabase';
+import { recordRevenue } from '../services/notifications/connect.client';
 import { asyncHandler } from '../utils/async-handler';
 import { getPaymentProvider } from '../services/payments';
 import { assignPlan } from '../services/membership/subscription.service';
@@ -57,6 +58,19 @@ export const snippeWebhook = asyncHandler(async (req: Request, res: Response) =>
 
   if (event.type === 'payment.completed' && userId) {
     const interval = event.metadata.interval === 'yearly' ? 'yearly' : 'monthly';
+
+    // Mirror the money into Connect so the dashboard and the phone app can show
+    // today's revenue. Never awaited and never allowed to throw: the member has
+    // paid and is about to be activated, and a reporting mirror must not be able
+    // to interfere with that.
+    if (event.amount && event.currency) {
+      void recordRevenue({
+        amount: event.amount,
+        currency: event.currency,
+        description: `${planSlug ?? 'Subscription'} · ${interval}`,
+        idempotencyKey: `pastatrade:payment:${event.id ?? event.reference}`
+      }).catch(() => undefined);
+    }
     if (planSlug) {
       await assignPlan(userId, {
         planSlug,
