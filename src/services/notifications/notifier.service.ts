@@ -106,7 +106,7 @@ export const resolveAudience = async (
   const plans = planOverride ?? rule.plan_codes;
   let query = supabase
     .from('users')
-    .select('id, email, whatsapp_number, whatsapp_opted_in_at, whatsapp_opted_out_at, plans(code)')
+    .select('id, email, whatsapp_number, whatsapp_opted_in_at, whatsapp_opted_out_at, plans(slug)')
     .not('whatsapp_opted_in_at', 'is', null)
     .is('whatsapp_opted_out_at', null)
     .not('whatsapp_number', 'is', null)
@@ -121,7 +121,9 @@ export const resolveAudience = async (
       id: String(r.id),
       email: String(r.email ?? ''),
       whatsapp_number: String(r.whatsapp_number ?? ''),
-      plan_code: ((r.plans as { code?: string } | null)?.code as string) ?? null
+      // The plans table keys on `slug` ('free' | 'mid' | 'premium'); a rule's
+      // plan_codes hold those same slugs.
+      plan_code: ((r.plans as { slug?: string } | null)?.slug as string) ?? null
     }))
     .filter((r) => r.whatsapp_number.length > 5)
     // An empty plan list on the rule means "every opted-in member".
