@@ -1,6 +1,7 @@
 import { supabase } from '../../config/supabase';
 import { env } from '../../config/env';
 import { dispatch, type DispatchSummary, type RuleKey } from './notifier.service';
+import { recordContactEvent, sendTemplate } from './connect.client';
 
 // triggers.service — the events that cause a WhatsApp message, and the wording.
 //
@@ -207,3 +208,90 @@ export const sendAnnouncement = async (input: {
     variables: input.variables,
     note: input.note
   });
+
+
+/* ── 6. Money arrived ─────────────────────────────────────────────────────── */
+
+/**
+ * A member paid. Thank them on WhatsApp, and make sure the payment shows in
+ * their conversation either way.
+ *
+ * Two paths, because consent decides which:
+ *
+ *   • They gave us a WhatsApp number → send the approved `payment_received`
+ *     template. It reaches them AND lands in their thread, because an outbound
+ *     message is part of the conversation.
+ *   • They did not → write a line into their thread instead, through the
+ *     contact-events endpoint, which cannot message anyone. The admin sees the
+ *     payment; the member is not contacted on a number they never offered.
+ *
+ * A receipt is a utility message and squarely inside what WhatsApp permits, but
+ * only to somebody who gave us the number. Paying for something is not consent
+ * to be messaged on a phone number scraped from a checkout form.
+ */
+export const notifyPaymentReceived = async (input: {
+  userId: string;
+  amount: number | string;
+  currency: string;
+  reference: string;
+  planLabel: string;
+}): Promise<{ sent: boolean; recorded: boolean; reason?: string }> => {
+  const { data } = await supabase
+    .from('users')
+    .select('full_name, email, phone, whatsapp_number, whatsapp_opted_in_at, whatsapp_opted_out_at')
+    .eq('id', input.userId)
+    .single();
+
+  const row = (data ?? {}) as {
+    full_name?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    whatsapp_number?: string | null;
+    whatsapp_opted_in_at?: string | null;
+    whatsapp_opted_out_at?: string | null;
+  };
+
+  const money = `${input.currency.toUpperCase()} ${Number(input.amount).toLocaleString('en-US')}`;
+  const [first, ...rest] = String(row.full_name ?? '').trim().split(/\s+/);
+  const name = first || row.email?.split('@')[0] || 'there';
+  const reachable = Boolean(row.whatsapp_number && row.whatsapp_opted_in_at && !row.whatsapp_opted_out_at);
+
+  if (reachable) {
+    const result = await sendTemplate({
+      to: row.whatsapp_number!,
+      templateName: 'payment_received',
+      language: 'en',
+      components: [
+        { type: 'body', parameters: [{ type: 'text', text: name }, { type: 'text', text: money }, { type: 'text', text: input.reference }] }
+      ],
+      idempotencyKey: `pastatrade:receipt:${input.reference}`
+    });
+    if (result.ok) return { sent: true, recorded: true };
+    // Fall through to the note: the admin should still see the payment even when
+    // the message was refused (a closed window, an opt-out, a template pulled).
+    const note = await recordContactEvent({
+      phone: row.whatsapp_number!,
+      firstName: first || null,
+      lastName: rest.join(' ') || null,
+      email: row.email ?? null,
+      title: 'Payment received',
+      note: `${row.full_name || name} paid ${money} for ${input.planLabel}. The receipt could not be sent (${result.code ?? 'unknown'}).`,
+      idempotencyKey: `pastatrade:receipt-note:${input.reference}`
+    });
+    return { sent: false, recorded: note.ok, reason: result.error ?? result.code };
+  }
+
+  const phone = row.whatsapp_number || row.phone;
+  if (!phone) return { sent: false, recorded: false, reason: 'No phone number on the account' };
+
+  const note = await recordContactEvent({
+    phone,
+    firstName: first || null,
+    lastName: rest.join(' ') || null,
+    email: row.email ?? null,
+    title: 'Payment received',
+    note: `${row.full_name || name} paid ${money} for ${input.planLabel}.`,
+    idempotencyKey: `pastatrade:receipt-note:${input.reference}`
+  });
+  return { sent: false, recorded: note.ok, reason: 'Member has not opted in to WhatsApp' };
+};

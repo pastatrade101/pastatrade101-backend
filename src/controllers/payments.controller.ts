@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { supabase } from '../config/supabase';
 import { recordRevenue } from '../services/notifications/connect.client';
+import { notifyPaymentReceived } from '../services/notifications/triggers.service';
 import { asyncHandler } from '../utils/async-handler';
 import { getPaymentProvider } from '../services/payments';
 import { assignPlan } from '../services/membership/subscription.service';
@@ -64,12 +65,26 @@ export const snippeWebhook = asyncHandler(async (req: Request, res: Response) =>
     // paid and is about to be activated, and a reporting mirror must not be able
     // to interfere with that.
     if (event.amount && event.currency) {
+      const planLabel = `${planSlug ?? 'Subscription'} · ${interval}`;
       void recordRevenue({
         amount: event.amount,
         currency: event.currency,
-        description: `${planSlug ?? 'Subscription'} · ${interval}`,
+        description: planLabel,
         idempotencyKey: `pastatrade:payment:${event.id ?? event.reference}`
       }).catch(() => undefined);
+
+      // Thank the member on WhatsApp, or at least put the payment in their
+      // conversation. Same rule as the revenue mirror: never awaited, never able
+      // to affect the activation happening below it.
+      void notifyPaymentReceived({
+        userId,
+        amount: event.amount,
+        currency: event.currency,
+        reference: event.reference,
+        planLabel
+      }).catch((error: unknown) => {
+        console.error('[notifications] receipt failed:', error instanceof Error ? error.message : error);
+      });
     }
     if (planSlug) {
       await assignPlan(userId, {
