@@ -18,7 +18,13 @@ import { isConnectConfigured, sendTemplate, type TemplateComponent } from './con
 // number in `users.phone` was collected for mobile-money checkout, and reusing it
 // for broadcasts is exactly the thing that gets a WhatsApp number banned.
 
-export type RuleKey = 'report.published' | 'risk.band_changed' | 'regime.changed' | 'altcoin.signal' | 'manual';
+export type RuleKey =
+  | 'report.published'
+  | 'risk.band_changed'
+  | 'regime.changed'
+  | 'altcoin.signal'
+  | 'exit.threshold_crossed'
+  | 'manual';
 
 export interface NotificationRule {
   id: string;

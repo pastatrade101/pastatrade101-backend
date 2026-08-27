@@ -1,0 +1,210 @@
+================================================================================
+PASTATRADE101 — WHATSAPP TEMPLATES FOR META SUBMISSION
+================================================================================
+
+Submit each template in WhatsApp Manager > Message templates > Create template.
+
+BEFORE YOU START — the two things that decide whether these get approved:
+
+1. CATEGORY = UTILITY (not Marketing) for all four.
+   Utility templates deliver reliably, can be sent outside the 24-hour window,
+   and do not get throttled. Marketing templates are rate-limited, need stricter
+   opt-in, and drive blocks. That is why every CTA below is ONE soft line. If you
+   add sales language, Meta will recategorise it as Marketing or reject it.
+
+2. VARIABLES CANNOT CONTAIN A NEWLINE.
+   Each {{n}} is a short phrase supplied by the backend. Do not restructure the
+   templates so a variable spans lines — the send will fail at the API.
+
+Template NAMES must match exactly, because you paste them into
+Admin > Notifications against each rule. Lowercase, underscores only.
+
+Submit the English template first. Then use "Add language" on the SAME template
+to add Swahili — do NOT create a second template with a different name.
+
+================================================================================
+1. pastatrade_risk_band          [Utility]   fires ~4-10x / year
+================================================================================
+The core alert. Sends when BTC risk moves into a different zone.
+
+--- BODY (English) ---
+Pastatrade101 · BTC Risk
+
+BTC risk just moved into {{1}} (score {{2}}).
+{{3}}.
+
+See what this means for DCA: {{4}}
+
+Not financial advice.
+
+--- BODY (Swahili) ---
+Pastatrade101 · Hatari ya BTC
+
+Hatari ya BTC imeingia {{1}} (alama {{2}}).
+{{3}}.
+
+Ona maana yake kwa DCA: {{4}}
+
+Si ushauri wa kifedha.
+
+--- VARIABLES ---
+{{1}}  the Good DCA zone
+{{2}}  0.38
+{{3}}  Last time it was here: 12 March 2024
+{{4}}  https://pastatrade101.com/app/risk
+
+--- SAMPLE FOR META ---
+the Good DCA zone | 0.38 | Last time it was here: 12 March 2024 | https://pastatrade101.com/app/risk
+
+NOTE: {{3}} is the whole clause, not a bare date, because it has a fallback
+("This is a first in our recorded history") when there is no earlier visit.
+
+
+================================================================================
+2. pastatrade_exit_threshold     [Utility]   fires ~1-3x / year
+================================================================================
+The rarest and highest-stakes message. Only fires crossing UP through the
+threshold — drifting back down is not news and would double the traffic.
+
+--- BODY (English) ---
+Pastatrade101 · Exit Signal
+
+Exit risk has crossed {{1}} — historically a distribution zone.
+
+Your ladder says: {{2}}
+
+See the full read: {{3}}
+
+Not financial advice.
+
+--- BODY (Swahili) ---
+Pastatrade101 · Ishara ya Kutoka
+
+Hatari ya kutoka imevuka {{1}} — kihistoria ni eneo la kugawa.
+
+Ngazi yako inasema: {{2}}
+
+Ona usomaji kamili: {{3}}
+
+Si ushauri wa kifedha.
+
+--- VARIABLES ---
+{{1}}  0.75
+{{2}}  Start trimming into strength
+{{3}}  https://pastatrade101.com/app/exit-strategy
+
+--- SAMPLE FOR META ---
+0.75 | Start trimming into strength | https://pastatrade101.com/app/exit-strategy
+
+
+================================================================================
+3. pastatrade_altcoin_breadth    [Utility]   fires ~3-6x / year
+================================================================================
+Keyed on the LABEL, not the percentage — 43% drifting to 44% stays silent, only
+a real regime change sends.
+
+--- BODY (English) ---
+Pastatrade101 · Altcoins vs BTC
+
+{{1}}% of altcoins are now beating BTC, up from {{2}}%.
+Breadth signal: {{3}}
+
+See which coins are leading: {{4}}
+
+Not financial advice.
+
+--- BODY (Swahili) ---
+Pastatrade101 · Altcoins dhidi ya BTC
+
+Asilimia {{1}} ya altcoins sasa zinashinda BTC, kutoka {{2}}%.
+Ishara ya upana: {{3}}
+
+Ona sarafu zinazoongoza: {{4}}
+
+Si ushauri wa kifedha.
+
+--- VARIABLES ---
+{{1}}  57
+{{2}}  43
+{{3}}  Broad strength
+{{4}}  https://pastatrade101.com/app/altcoin-btc-lab
+
+--- SAMPLE FOR META ---
+57 | 43 | Broad strength | https://pastatrade101.com/app/altcoin-btc-lab
+
+
+================================================================================
+4. pastatrade_report_ready       [Utility]   fires 1x / week
+================================================================================
+Already wired to notifyReportPublished(). The report id is the subject, so
+re-publishing the same report cannot message anybody twice.
+
+--- BODY (English) ---
+Pastatrade101 · New Report
+
+Your {{1}} market intelligence report is ready.
+Market posture: {{2}}
+
+Read it here: {{3}}
+
+Not financial advice.
+
+--- BODY (Swahili) ---
+Pastatrade101 · Ripoti Mpya
+
+Ripoti yako ya {{1}} ya ufahamu wa soko iko tayari.
+Hali ya soko: {{2}}
+
+Isome hapa: {{3}}
+
+Si ushauri wa kifedha.
+
+--- VARIABLES ---
+{{1}}  Weekly
+{{2}}  Cautious
+{{3}}  https://pastatrade101.com/reports/weekly-2024-03-18
+
+--- SAMPLE FOR META ---
+Weekly | Cautious | https://pastatrade101.com/reports/weekly-2024-03-18
+
+
+================================================================================
+OPTIONAL — the Premium line
+================================================================================
+If you want an upgrade nudge, add this as the LAST line of templates 1-3. One
+line only. Do not add it to all four, and do not make it longer.
+
+  English:  Premium members also get the AI's reading of what changed.
+  Swahili:  Wanachama wa Premium hupata pia usomaji wa AI wa kilichobadilika.
+
+WHY THIS WORKS AND STAYS UTILITY:
+The alert delivers the FACT for free — genuinely useful on its own, so a free
+member is not being teased with nothing. Premium delivers the MEANING. That is
+already how your product is built (rule-based "Signal read" vs the AI
+interpretation), so the line describes a real extra rather than a paywall on
+something you just sent.
+
+RECOMMENDATION: submit templates 1-4 WITHOUT the Premium line first and get them
+approved. Add the line as a template edit afterwards. A rejected template is a
+7-day wait; a rejected edit leaves the approved version live.
+
+
+================================================================================
+AFTER APPROVAL
+================================================================================
+1. Run database/notification-rules-seed.sql in Supabase.
+2. Set CONNECT_API_KEY in the backend env. While it is blank the whole notifier
+   is inert — rules are editable, nothing sends. That is the safe default.
+3. In Admin > Notifications, paste each approved template name against its rule
+   and switch the rule ON. Rules ship DISABLED with a null template on purpose:
+   a rule with no template cannot send even if enabled.
+4. Send yourself a manual announcement first. Confirm it arrives before enabling
+   any rule that reaches the whole member list.
+
+Per-member rate limits already seeded (the SQL sets these):
+  risk.band_changed       72h between, max 1/day
+  exit.threshold_crossed  168h between, max 1/day
+  altcoin.signal          96h between, max 1/day
+  report.published        24h between, max 1/day
+Plus WHATSAPP_MAX_PER_RUN (default 200) as a hard ceiling per tick that the
+admin panel cannot raise.
