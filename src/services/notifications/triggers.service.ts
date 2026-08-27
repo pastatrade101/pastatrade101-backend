@@ -169,13 +169,16 @@ export const notifyAltcoinBreadth = async (
  */
 export const notifyReportPublished = async (
   report: { id: string; slug: string | null; report_type: string; market_status?: { regime?: string } | null },
-  triggeredBy?: string | null
+  triggeredBy?: string | null,
+  /** Who to tell, chosen at publish time. Omit to use the rule's standing default. */
+  planCodes?: string[]
 ): Promise<DispatchSummary> =>
   dispatch({
     ruleKey: 'report.published',
     subjectType: 'report',
     subjectId: report.id,
     triggeredBy: triggeredBy ?? null,
+    planCodes,
     variables: [
       titleCase(report.report_type),
       report.market_status?.regime ?? 'see the report',

@@ -57,6 +57,11 @@ export interface DispatchInput {
   /** Overrides the rule's template — used by a manual admin send. */
   templateName?: string;
   templateLanguage?: string;
+  /**
+   * Overrides the rule's plan filter for this send only.
+   * `[]` means every opted-in member; omit to use whatever the rule says.
+   */
+  planCodes?: string[];
 }
 
 export interface DispatchSummary {
@@ -88,7 +93,14 @@ export const getRule = async (key: string): Promise<NotificationRule | null> => 
  * Opt-in is the first filter, not the last, so a plan change or a mis-typed rule
  * can never widen the audience beyond people who actually agreed.
  */
-export const resolveAudience = async (rule: NotificationRule): Promise<Recipient[]> => {
+export const resolveAudience = async (
+  rule: NotificationRule,
+  planOverride?: string[]
+): Promise<Recipient[]> => {
+  // An explicit choice at send time wins over the rule's standing default — an
+  // admin publishing one premium-only report should not have to edit the rule and
+  // remember to put it back.
+  const plans = planOverride ?? rule.plan_codes;
   let query = supabase
     .from('users')
     .select('id, email, whatsapp_number, whatsapp_opted_in_at, whatsapp_opted_out_at, plans(code)')
@@ -110,7 +122,7 @@ export const resolveAudience = async (rule: NotificationRule): Promise<Recipient
     }))
     .filter((r) => r.whatsapp_number.length > 5)
     // An empty plan list on the rule means "every opted-in member".
-    .filter((r) => rule.plan_codes.length === 0 || (r.plan_code !== null && rule.plan_codes.includes(r.plan_code)));
+    .filter((r) => plans.length === 0 || (r.plan_code !== null && plans.includes(r.plan_code)));
 };
 
 /** Has this person had too much from us lately? */
@@ -170,7 +182,7 @@ export const dispatch = async (input: DispatchInput): Promise<DispatchSummary> =
     return nothing(`The "${rule.label}" rule has no approved template, so it cannot send`);
   }
 
-  const audience = await resolveAudience(rule);
+  const audience = await resolveAudience(rule, input.planCodes);
   const { data: batch } = await supabase
     .from('notification_batches')
     .insert({

@@ -80,18 +80,24 @@ export const adminUpdateReport = asyncHandler(async (req: Request, res: Response
 export const adminPublishReport = asyncHandler(async (req: Request, res: Response) => {
   const data = await publishReport(req.params.id, req.user!.sub);
 
-  // Tell the members who asked to be told. Deliberately after the publish has
-  // succeeded and deliberately not awaited into the response: a WhatsApp fan-out
-  // to a few hundred people must never make an admin sit and watch a spinner, or
-  // worse, fail the publish it was only meant to announce.
-  const notify = (data as { report?: { id: string; slug: string | null; report_type: string; market_status?: { regime?: string } | null } })?.report;
-  if (notify) {
-    void notifyReportPublished(notify, req.user!.sub).catch((error: unknown) => {
+  // Who hears about it is chosen here, not baked into the rule:
+  //   notify:false            → publish quietly
+  //   plans omitted           → whatever the rule says
+  //   plans: []               → every opted-in member, free tiers included
+  //   plans: ['premium']      → only those plans
+  // An admin publishing one premium-only report should not have to edit the rule
+  // and remember to put it back afterwards.
+  const notify = req.body?.notify !== false;
+  const plans = Array.isArray(req.body?.plans) ? req.body.plans.map((p: unknown) => String(p)) : undefined;
+
+  const report = (data as { report?: { id: string; slug: string | null; report_type: string; market_status?: { regime?: string } | null } })?.report;
+  if (notify && report) {
+    void notifyReportPublished(report, req.user!.sub, plans).catch((error: unknown) => {
       console.error('[notifications] report announcement failed:', error instanceof Error ? error.message : error);
     });
   }
 
-  return sendSuccess(res, 'Report published successfully.', data);
+  return sendSuccess(res, notify ? 'Report published. Members are being notified.' : 'Report published quietly.', data);
 });
 
 export const adminArchiveReport = asyncHandler(async (req: Request, res: Response) => {
