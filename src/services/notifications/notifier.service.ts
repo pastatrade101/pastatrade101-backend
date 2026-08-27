@@ -93,6 +93,9 @@ export const getRule = async (key: string): Promise<NotificationRule | null> => 
  * Opt-in is the first filter, not the last, so a plan change or a mis-typed rule
  * can never widen the audience beyond people who actually agreed.
  */
+/** "255712345678" → "••••5678". Enough to audit a send, useless as a contact. */
+const maskNumber = (n: string): string => (n.length <= 4 ? '••••' : `••••${n.slice(-4)}`);
+
 export const resolveAudience = async (
   rule: NotificationRule,
   planOverride?: string[]
@@ -218,7 +221,12 @@ export const dispatch = async (input: DispatchInput): Promise<DispatchSummary> =
         user_id: person.id,
         subject_type: input.subjectType,
         subject_id: input.subjectId,
-        to_number: person.whatsapp_number,
+        // MASKED on purpose. The delivery log is an admin-readable audit trail,
+        // and an admin has no reason to read members' phone numbers out of it —
+        // the send itself reads the live number from users.whatsapp_number. The
+        // last four digits are enough to answer "was this the number we had?"
+        // without turning the log into an exportable contact list.
+        to_number: maskNumber(person.whatsapp_number),
         status: 'queued'
       })
       .select('id')
