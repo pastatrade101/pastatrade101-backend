@@ -101,8 +101,15 @@ export const listTemplates = async (): Promise<Array<{ name: string; language: s
       headers: { authorization: `Bearer ${env.CONNECT_API_KEY}` }
     });
     if (!res.ok) return [];
-    const payload = (await res.json()) as { data?: { items?: Array<Record<string, unknown>> } };
-    return (payload.data?.items ?? []).map((t) => ({
+    // Connect returns `data` as a bare array for this endpoint and as `{ items }`
+    // for its paginated ones. Accept both rather than silently returning nothing
+    // when it changes — an empty list here shows up as "no templates" in the admin
+    // panel, which looks like a WhatsApp problem and is not one.
+    const payload = (await res.json()) as {
+      data?: Array<Record<string, unknown>> | { items?: Array<Record<string, unknown>> };
+    };
+    const rows = Array.isArray(payload.data) ? payload.data : (payload.data?.items ?? []);
+    return rows.map((t) => ({
       name: String(t.name ?? ''),
       language: String(t.language ?? 'en'),
       status: String(t.status ?? 'UNKNOWN')
