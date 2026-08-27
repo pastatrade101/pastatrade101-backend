@@ -101,7 +101,7 @@ export const sendTemplate = async (input: SendTemplateInput): Promise<SendResult
 
 /** Which templates Connect has, so the admin panel offers real names, not guesses. */
 export const listTemplates = async (): Promise<
-  Array<{ name: string; language: string; status: string; variableCount: number }>
+  Array<{ name: string; language: string; status: string; variableCount: number; body: string | null }>
 > => {
   if (!isConnectConfigured()) return [];
   try {
@@ -121,7 +121,8 @@ export const listTemplates = async (): Promise<
       name: String(t.name ?? ''),
       language: String(t.language ?? 'en'),
       status: String(t.status ?? 'UNKNOWN'),
-      variableCount: Number(t.variableCount ?? 0)
+      variableCount: Number(t.variableCount ?? 0),
+      body: (t.body as string | null) ?? null
     }));
   } catch {
     return [];
