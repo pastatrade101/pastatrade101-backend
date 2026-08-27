@@ -67,7 +67,13 @@ export const sendTemplate = async (input: SendTemplateInput): Promise<SendResult
           templateName: input.templateName,
           language: input.language ?? 'en',
           ...(input.components?.length ? { components: input.components } : {})
-        }
+        },
+        // Wait for the real Meta call instead of the queue's acknowledgement.
+        // Queued sends return 202 before Meta sees the message, so a rejected
+        // template still reported "sent" — an admin watched a green 1 for a
+        // message nobody received. A delivery report that can lie is worse than
+        // a slower one.
+        dispatch: 'sync'
       },
       input.idempotencyKey
     );
@@ -94,7 +100,9 @@ export const sendTemplate = async (input: SendTemplateInput): Promise<SendResult
 };
 
 /** Which templates Connect has, so the admin panel offers real names, not guesses. */
-export const listTemplates = async (): Promise<Array<{ name: string; language: string; status: string }>> => {
+export const listTemplates = async (): Promise<
+  Array<{ name: string; language: string; status: string; variableCount: number }>
+> => {
   if (!isConnectConfigured()) return [];
   try {
     const res = await fetch(`${env.CONNECT_API_URL}/api/v1/whatsapp/templates`, {
@@ -112,7 +120,8 @@ export const listTemplates = async (): Promise<Array<{ name: string; language: s
     return rows.map((t) => ({
       name: String(t.name ?? ''),
       language: String(t.language ?? 'en'),
-      status: String(t.status ?? 'UNKNOWN')
+      status: String(t.status ?? 'UNKNOWN'),
+      variableCount: Number(t.variableCount ?? 0)
     }));
   } catch {
     return [];

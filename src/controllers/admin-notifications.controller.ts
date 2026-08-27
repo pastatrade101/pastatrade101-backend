@@ -64,6 +64,17 @@ export const adminSendAnnouncement = asyncHandler(async (req: Request, res: Resp
   if (!templateName) throw new AppError('An approved template name is required.', 400);
   const variables = Array.isArray(req.body?.variables) ? req.body.variables.map((v: unknown) => String(v)) : [];
 
+  // Meta rejects a parameter-count mismatch with error 132000, and by then the
+  // send is already recorded. Catch it here, where we can say which template
+  // wanted how many.
+  const template = (await listTemplates()).find((t) => t.name === templateName);
+  if (template && template.variableCount !== variables.length) {
+    throw new AppError(
+      `${templateName} needs ${template.variableCount} value${template.variableCount === 1 ? '' : 's'}, but ${variables.length} ${variables.length === 1 ? 'was' : 'were'} given. Separate them with |.`,
+      400
+    );
+  }
+
   const summary = await sendAnnouncement({
     templateName,
     templateLanguage: req.body?.template_language ? String(req.body.template_language) : undefined,
