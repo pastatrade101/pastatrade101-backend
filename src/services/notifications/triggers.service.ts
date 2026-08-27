@@ -5,23 +5,167 @@ import { dispatch, type DispatchSummary, type RuleKey } from './notifier.service
 // triggers.service — the events that cause a WhatsApp message, and the wording.
 //
 // Templates are approved by Meta with fixed text and numbered variables, so the
-// only thing this file decides is what goes into {{1}}, {{2}}, {{3}}. Keep them
-// short: a body variable may not contain a newline, and the whole rendered
-// message has to still read like a notification rather than a newsletter.
+// only thing this file decides is what goes into {{1}}, {{2}}, {{3}}, {{4}} — and,
+// more importantly, WHETHER TO SEND AT ALL.
+//
+// That second job is the whole point. A market number moves constantly; a person's
+// phone must not. Each trigger below therefore compares against the last thing we
+// said, and stays silent when nothing has genuinely changed. There is no state
+// table for this: the last send's `subject_id` IS the previous state, which means
+// the record of what we told someone and the logic deciding what to tell them next
+// can never drift apart.
 
-const reportUrl = (slug: string): string => `${env.FRONTEND_URL.replace(/\/$/, '')}/reports/${slug}`;
-
+const site = (): string => env.FRONTEND_URL.replace(/\/$/, '');
 const titleCase = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** The subject of the most recent send for a rule — i.e. what we last said. */
+const lastSubject = async (ruleKey: string): Promise<string | null> => {
+  const { data } = await supabase
+    .from('notification_sends')
+    .select('subject_id')
+    .eq('rule_key', ruleKey)
+    .eq('subject_type', 'signal')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data as { subject_id?: string } | null)?.subject_id ?? null;
+};
+
+const unchanged = (reason: string): DispatchSummary => ({
+  batchId: null,
+  audience: 0,
+  sent: 0,
+  skipped: 0,
+  failed: 0,
+  reason
+});
+
+/* ── 1. BTC risk band ─────────────────────────────────────────────────────── */
+
+/**
+ * BTC risk has moved into a different zone.
+ *
+ * Template `pastatrade_risk_band`:
+ *   {{1}} zone · {{2}} score · {{3}} the history clause · {{4}} link
+ *
+ * {{3}} is the whole clause rather than a bare date because it has to read
+ * correctly when there is no earlier visit — "This is a first in our recorded
+ * history" is a sentence, not a null date.
+ */
+export const notifyRiskBand = async (
+  input: { zone: string; score: number | string; lastVisit?: string | null },
+  triggeredBy?: string | null
+): Promise<DispatchSummary> => {
+  const fingerprint = `risk:${input.zone}`;
+  if ((await lastSubject('risk.band_changed')) === fingerprint) {
+    return unchanged(`BTC risk is still in ${input.zone} — nothing sent`);
+  }
+
+  const history = input.lastVisit
+    ? `Last time it was here: ${input.lastVisit}`
+    : 'This is a first in our recorded history';
+
+  return dispatch({
+    ruleKey: 'risk.band_changed',
+    subjectType: 'signal',
+    subjectId: fingerprint,
+    triggeredBy: triggeredBy ?? null,
+    variables: [input.zone, String(input.score), history, `${site()}/app/risk`]
+  });
+};
+
+/* ── 2. Exit threshold ────────────────────────────────────────────────────── */
+
+/**
+ * Exit risk crossed the threshold.
+ *
+ * Fires on the way UP only. Coming back down is not news, and treating it as news
+ * would double the traffic on the one alert that most needs to stay rare — the
+ * message says "historically a distribution zone", which is meaningless when the
+ * value is falling out of it.
+ *
+ * Template `pastatrade_exit_threshold`:
+ *   {{1}} threshold · {{2}} what the ladder says · {{3}} link
+ */
+export const notifyExitThreshold = async (
+  input: { threshold: number | string; above: boolean; ladder: string },
+  triggeredBy?: string | null
+): Promise<DispatchSummary> => {
+  const previous = await lastSubject('exit.threshold_crossed');
+  const wasAbove = previous?.endsWith(':above') ?? false;
+
+  if (!input.above) {
+    // Record the descent so the next climb counts as a crossing, but say nothing.
+    if (wasAbove) {
+      await supabase.from('notification_batches').insert({
+        rule_key: 'exit.threshold_crossed',
+        subject_type: 'signal',
+        subject_id: `exit:${input.threshold}:below`,
+        audience_count: 0,
+        status: 'done',
+        note: 'Exit risk fell back below the threshold — state recorded, nothing sent.',
+        finished_at: new Date().toISOString()
+      });
+    }
+    return unchanged('Exit risk is below the threshold — nothing sent');
+  }
+
+  if (wasAbove) return unchanged('Exit risk was already above the threshold — nothing sent');
+
+  return dispatch({
+    ruleKey: 'exit.threshold_crossed',
+    subjectType: 'signal',
+    subjectId: `exit:${input.threshold}:above`,
+    triggeredBy: triggeredBy ?? null,
+    variables: [String(input.threshold), input.ladder, `${site()}/app/exit-strategy`]
+  });
+};
+
+/* ── 3. Altcoin breadth ───────────────────────────────────────────────────── */
+
+/**
+ * The share of altcoins beating BTC has moved into a different breadth regime.
+ *
+ * Keyed on the LABEL, never the percentage: 43% drifting to 44% is noise and must
+ * stay silent, while "Narrow" becoming "Broad strength" is the thing worth a
+ * message. The percentages still travel in the text — they are the evidence for
+ * the label, not the trigger for the send.
+ *
+ * Template `pastatrade_altcoin_breadth`:
+ *   {{1}} percent now · {{2}} percent before · {{3}} breadth label · {{4}} link
+ */
+export const notifyAltcoinBreadth = async (
+  input: { percent: number | string; previousPercent: number | string; label: string },
+  triggeredBy?: string | null
+): Promise<DispatchSummary> => {
+  const fingerprint = `altcoin:${input.label}`;
+  if ((await lastSubject('altcoin.signal')) === fingerprint) {
+    return unchanged(`Breadth is still "${input.label}" — nothing sent`);
+  }
+
+  return dispatch({
+    ruleKey: 'altcoin.signal',
+    subjectType: 'signal',
+    subjectId: fingerprint,
+    triggeredBy: triggeredBy ?? null,
+    variables: [
+      String(input.percent),
+      String(input.previousPercent),
+      input.label,
+      `${site()}/app/altcoin-btc-lab`
+    ]
+  });
+};
+
+/* ── 4. Report published ──────────────────────────────────────────────────── */
 
 /**
  * A report was published. Every opted-in member on a matching plan is told once,
  * ever — the report id is the subject, so re-publishing the same report cannot
  * message anybody twice.
  *
- * Template shape this expects (approved in Meta as `pastatrade_report_ready`):
- *
- *   "Your {{1}} market intelligence report is ready. Market posture: {{2}}.
- *    Read it here: {{3}} — Pastatrade. Not financial advice."
+ * Template `pastatrade_report_ready`:
+ *   {{1}} report type · {{2}} market posture · {{3}} link
  */
 export const notifyReportPublished = async (
   report: { id: string; slug: string | null; report_type: string; market_status?: { regime?: string } | null },
@@ -35,208 +179,11 @@ export const notifyReportPublished = async (
     variables: [
       titleCase(report.report_type),
       report.market_status?.regime ?? 'see the report',
-      reportUrl(report.slug ?? report.id)
+      `${site()}/reports/${report.slug ?? report.id}`
     ]
   });
 
-/**
- * A market read has changed state — the risk band, the macro regime, whatever the
- * caller decides is worth interrupting somebody's day for.
- *
- * Change detection lives here rather than in a state table: the last send for
- * this rule carries the previous label as its subject, so a value that has not
- * moved simply produces no message. A member who joins mid-week is not told about
- * a change that happened before they arrived, which is the correct behaviour for
- * an alert (they can see the current state in the app).
- */
-export const notifyMarketChange = async (
-  kind: 'risk.band_changed' | 'regime.changed',
-  input: { label: string; previous?: string | null; url?: string },
-  triggeredBy?: string | null
-): Promise<DispatchSummary> => {
-  const fingerprint = `${kind}:${input.label}`;
-
-  const { data: last } = await supabase
-    .from('notification_sends')
-    .select('subject_id')
-    .eq('rule_key', kind)
-    .eq('subject_type', 'signal')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  const previousFingerprint = (last as { subject_id?: string } | null)?.subject_id ?? null;
-  if (previousFingerprint === fingerprint) {
-    return { batchId: null, audience: 0, sent: 0, skipped: 0, failed: 0, reason: 'Nothing changed since the last alert' };
-  }
-
-  const what = kind === 'risk.band_changed' ? 'BTC risk' : 'Market regime';
-  return dispatch({
-    ruleKey: kind as RuleKey,
-    subjectType: 'signal',
-    subjectId: fingerprint,
-    triggeredBy: triggeredBy ?? null,
-    variables: [what, input.label, input.url ?? env.FRONTEND_URL]
-  });
-};
-
-/* ── Risk band ───────────────────────────────────────────────────────────── */
-
-// The same 0–1 bands the risk dashboard draws, so an alert can never name a zone
-// the app does not show.
-const BANDS: { max: number; label: string }[] = [
-  { max: 0.2, label: 'the Aggressive DCA zone' },
-  { max: 0.4, label: 'the Good DCA zone' },
-  { max: 0.6, label: 'the Neutral zone' },
-  { max: 0.8, label: 'the Caution zone' },
-  { max: Infinity, label: 'the Distribution zone' }
-];
-export const bandFor = (risk: number): string => (BANDS.find((b) => risk < b.max) ?? BANDS[BANDS.length - 1]).label;
-
-const humanDate = (iso: string): string =>
-  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
-
-/**
- * "Last time it was here: 12 March 2024."
- *
- * This one line is what makes the alert feel like inside knowledge rather than a
- * bot, and it is the reason the rule is worth a notification at all. Walk back
- * through the daily history: skip the CURRENT streak in this band, then return
- * the first earlier day that was also in it. Null when the band has no prior
- * visit in the stored history — the caller then omits the line rather than
- * inventing one.
- */
-const lastSeenInBand = async (band: string): Promise<string | null> => {
-  const { data } = await supabase
-    .from('risk_summary_daily')
-    .select('snapshot_date, summary_risk')
-    .order('snapshot_date', { ascending: false })
-    .limit(1200); // ~3 years of daily rows
-
-  const rows = (data ?? []) as { snapshot_date: string; summary_risk: number | null }[];
-  let leftCurrentStreak = false;
-  for (const r of rows) {
-    if (r.summary_risk == null) continue;
-    const inBand = bandFor(Number(r.summary_risk)) === band;
-    if (!leftCurrentStreak) {
-      // Still inside today's run of this band — keep walking back.
-      if (!inBand) leftCurrentStreak = true;
-      continue;
-    }
-    if (inBand) return humanDate(r.snapshot_date);
-  }
-  return null;
-};
-
-/**
- * BTC risk moved into a new band. Fires a handful of times a year, which is
- * exactly why it is worth interrupting someone for.
- *
- * Template `pastatrade_risk_band`:
- *   {{1}} band · {{2}} score · {{3}} last-seen phrase · {{4}} url
- */
-export const notifyRiskBand = async (
-  input: { risk: number; url?: string },
-  triggeredBy?: string | null
-): Promise<DispatchSummary> => {
-  const band = bandFor(input.risk);
-  const fingerprint = `risk.band_changed:${band}`;
-
-  const { data: last } = await supabase
-    .from('notification_sends')
-    .select('subject_id')
-    .eq('rule_key', 'risk.band_changed')
-    .eq('subject_type', 'signal')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if ((last as { subject_id?: string } | null)?.subject_id === fingerprint) {
-    return { batchId: null, audience: 0, sent: 0, skipped: 0, failed: 0, reason: 'BTC risk is still in the same band' };
-  }
-
-  const seen = await lastSeenInBand(band);
-  return dispatch({
-    ruleKey: 'risk.band_changed',
-    subjectType: 'signal',
-    subjectId: fingerprint,
-    triggeredBy: triggeredBy ?? null,
-    // A body variable cannot contain a newline, so the "last seen" clause is a
-    // whole phrase — including its fallback — rather than a bare date.
-    variables: [band, input.risk.toFixed(2), seen ? `Last time it was here: ${seen}` : 'This is a first in our recorded history', input.url ?? `${env.FRONTEND_URL}/app/risk`]
-  });
-};
-
-/* ── Exit risk ───────────────────────────────────────────────────────────── */
-
-/**
- * Exit risk crossed a ladder threshold. The rarest and highest-stakes message we
- * send, so it is deliberately one-way: crossing UP alerts, drifting back down
- * does not (that is not news, and it would double the traffic).
- *
- * Template `pastatrade_exit_threshold`:
- *   {{1}} threshold · {{2}} action · {{3}} url
- */
-export const notifyExitThreshold = async (
-  input: { score: number; threshold?: number; action: string; url?: string },
-  triggeredBy?: string | null
-): Promise<DispatchSummary> => {
-  const threshold = input.threshold ?? 0.75;
-  if (input.score < threshold) {
-    return { batchId: null, audience: 0, sent: 0, skipped: 0, failed: 0, reason: `Exit risk ${input.score.toFixed(2)} is below ${threshold}` };
-  }
-  return dispatch({
-    ruleKey: 'exit.threshold_crossed',
-    subjectType: 'signal',
-    // One alert per threshold per crossing — re-entering later is a new subject.
-    subjectId: `exit.threshold_crossed:${threshold}`,
-    triggeredBy: triggeredBy ?? null,
-    variables: [threshold.toFixed(2), input.action, input.url ?? `${env.FRONTEND_URL}/app/exit-strategy`]
-  });
-};
-
-/* ── Altcoin breadth ─────────────────────────────────────────────────────── */
-
-/**
- * The share of altcoins beating BTC flipped regime. Keyed on the LABEL, not the
- * percentage, so a number drifting 43% → 44% is silent and only a genuine change
- * of state ("Selective strength" → "Broad strength") sends.
- *
- * Template `pastatrade_altcoin_breadth`:
- *   {{1}} pct now · {{2}} pct before · {{3}} label · {{4}} url
- */
-export const notifyAltcoinBreadth = async (
-  input: { pct: number; previousPct?: number | null; label: string; url?: string },
-  triggeredBy?: string | null
-): Promise<DispatchSummary> => {
-  const fingerprint = `altcoin.signal:${input.label}`;
-
-  const { data: last } = await supabase
-    .from('notification_sends')
-    .select('subject_id')
-    .eq('rule_key', 'altcoin.signal')
-    .eq('subject_type', 'signal')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if ((last as { subject_id?: string } | null)?.subject_id === fingerprint) {
-    return { batchId: null, audience: 0, sent: 0, skipped: 0, failed: 0, reason: 'Altcoin breadth is still in the same regime' };
-  }
-
-  return dispatch({
-    ruleKey: 'altcoin.signal',
-    subjectType: 'signal',
-    subjectId: fingerprint,
-    triggeredBy: triggeredBy ?? null,
-    variables: [
-      Math.round(input.pct).toString(),
-      input.previousPct == null ? 'n/a' : Math.round(input.previousPct).toString(),
-      input.label,
-      input.url ?? `${env.FRONTEND_URL}/app/altcoin-btc-lab`
-    ]
-  });
-};
+/* ── 5. By hand ───────────────────────────────────────────────────────────── */
 
 /** An admin writing to the membership directly, through an approved template. */
 export const sendAnnouncement = async (input: {
@@ -247,7 +194,7 @@ export const sendAnnouncement = async (input: {
   triggeredBy: string;
 }): Promise<DispatchSummary> =>
   dispatch({
-    ruleKey: 'manual',
+    ruleKey: 'manual' as RuleKey,
     subjectType: 'manual',
     // A fresh subject each time: an announcement is deliberately repeatable.
     subjectId: `${Date.now()}`,

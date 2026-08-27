@@ -4,7 +4,12 @@ import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { isConnectConfigured, listTemplates } from '../services/notifications/connect.client';
 import { getRule, resolveAudience } from '../services/notifications/notifier.service';
-import { notifyMarketChange, sendAnnouncement } from '../services/notifications/triggers.service';
+import {
+  notifyAltcoinBreadth,
+  notifyExitThreshold,
+  notifyRiskBand,
+  sendAnnouncement
+} from '../services/notifications/triggers.service';
 
 // Admin WhatsApp notifications: see the rules, see who would receive them, turn
 // them on, and send an announcement by hand. Mounted under /api/v1/admin.
@@ -69,17 +74,56 @@ export const adminSendAnnouncement = asyncHandler(async (req: Request, res: Resp
   return sendSuccess(res, summary.reason ?? 'Announcement dispatched.', summary);
 });
 
-/** Fire a market-change alert by hand — same path the scheduler would use. */
+/**
+ * Fire a market alert by hand — the same path the scheduler uses, including the
+ * change detection. Sending the same zone twice from here is refused for the same
+ * reason it is refused automatically: it is not news.
+ */
 export const adminSendMarketAlert = asyncHandler(async (req: Request, res: Response) => {
   const kind = String(req.body?.kind ?? '');
-  if (kind !== 'risk.band_changed' && kind !== 'regime.changed') {
-    throw new AppError('kind must be risk.band_changed or regime.changed.', 400);
-  }
-  const label = String(req.body?.label ?? '').trim();
-  if (!label) throw new AppError('A label is required (e.g. "Elevated").', 400);
+  const by = req.user!.sub;
 
-  const summary = await notifyMarketChange(kind, { label, url: req.body?.url ? String(req.body.url) : undefined }, req.user!.sub);
-  return sendSuccess(res, summary.reason ?? 'Alert dispatched.', summary);
+  if (kind === 'risk.band_changed') {
+    const zone = String(req.body?.zone ?? '').trim();
+    if (!zone) throw new AppError('A zone is required, e.g. "the Good DCA zone".', 400);
+    const summary = await notifyRiskBand(
+      { zone, score: req.body?.score ?? '', lastVisit: req.body?.last_visit ?? null },
+      by
+    );
+    return sendSuccess(res, summary.reason ?? 'Alert dispatched.', summary);
+  }
+
+  if (kind === 'exit.threshold_crossed') {
+    const threshold = req.body?.threshold;
+    if (threshold === undefined || threshold === null || threshold === '') {
+      throw new AppError('A threshold is required, e.g. 0.75.', 400);
+    }
+    const summary = await notifyExitThreshold(
+      {
+        threshold,
+        above: req.body?.above !== false,
+        ladder: String(req.body?.ladder ?? 'Review your exit ladder')
+      },
+      by
+    );
+    return sendSuccess(res, summary.reason ?? 'Alert dispatched.', summary);
+  }
+
+  if (kind === 'altcoin.signal') {
+    const label = String(req.body?.label ?? '').trim();
+    if (!label) throw new AppError('A breadth label is required, e.g. "Broad strength".', 400);
+    const summary = await notifyAltcoinBreadth(
+      {
+        percent: req.body?.percent ?? '',
+        previousPercent: req.body?.previous_percent ?? '',
+        label
+      },
+      by
+    );
+    return sendSuccess(res, summary.reason ?? 'Alert dispatched.', summary);
+  }
+
+  throw new AppError('kind must be risk.band_changed, exit.threshold_crossed or altcoin.signal.', 400);
 });
 
 export const adminListNotificationBatches = asyncHandler(async (_req: Request, res: Response) => {
