@@ -4,6 +4,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { isConnectConfigured, listTemplates } from '../services/notifications/connect.client';
 import { getRule, resolveAudience } from '../services/notifications/notifier.service';
+import { suggestVariables } from '../services/notifications/suggestions.service';
 import {
   notifyAltcoinBreadth,
   notifyExitThreshold,
@@ -57,6 +58,26 @@ export const adminPreviewAudience = asyncHandler(async (req: Request, res: Respo
     plans: rule.plan_codes,
     sample: audience.slice(0, 5).map((a) => ({ email: a.email, plan: a.plan_code }))
   });
+});
+
+/**
+ * What this template would say if it went out right now.
+ *
+ * An admin hand-typing "0.75" and a ladder action into three boxes is how a
+ * message goes out saying something the dashboard does not. Every value these
+ * templates need is already computed, so the form offers it and the admin
+ * corrects it, rather than the other way round.
+ */
+export const adminSuggestVariables = asyncHandler(async (req: Request, res: Response) => {
+  const template = String(req.query.template ?? '').trim();
+  if (!template) throw new AppError('A template name is required.', 400);
+
+  const suggestion = await suggestVariables(template);
+  if (!suggestion) {
+    // A manual announcement has no live source; an empty form is the honest answer.
+    return sendSuccess(res, 'No live data maps to this template.', { live: false, variables: [], labels: [], source: '' });
+  }
+  return sendSuccess(res, suggestion.live ? 'Filled from live data.' : suggestion.source, suggestion);
 });
 
 export const adminSendAnnouncement = asyncHandler(async (req: Request, res: Response) => {
