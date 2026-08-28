@@ -264,3 +264,45 @@ Per-member rate limits already seeded (the SQL sets these):
   (pastatrade_alt_leaders has no rule — it is sent by hand from the composer.)
 Plus WHATSAPP_MAX_PER_RUN (default 200) as a hard ceiling per tick that the
 admin panel cannot raise.
+
+================================================================================
+5. pastatrade_beating_btc        [Utility]   fires manually / on breadth change
+================================================================================
+Names the coins the app itself confirms are stronger than BTC. Submitted
+2026-08-28 in both languages.
+
+--- BODY (English) ---
+Pastatrade101 · Beating BTC
+
+Confirmed stronger than BTC right now: {{1}}
+
+Breadth: {{2}} of altcoins are outperforming.
+
+See the full list and why: {{3}}
+
+Past strength is not a promise. Not financial advice.
+
+--- BODY (Swahili) ---
+Pastatrade101 · Zinazoshinda BTC
+
+Zilizothibitishwa kuwa na nguvu kuliko BTC sasa: {{1}}
+
+Upana: {{2}} ya altcoins zinashinda.
+
+Ona orodha kamili na sababu: {{3}}
+
+Nguvu ya zamani si ahadi. Si ushauri wa kifedha.
+
+--- VARIABLES ---
+{{1}}  SOL, LINK, ENA          (only coins the app marks Confirmed)
+{{2}}  57%                     (share of altcoins outperforming)
+{{3}}  https://pastatrade101.com/app/altcoin-btc-lab
+
+--- SAMPLE FOR META ---
+SOL, LINK, ENA | 57% | https://pastatrade101.com/app/altcoin-btc-lab
+
+NOTE ON RISK: this is the only template that names specific assets, so it is the
+one most likely to be read as financial advice — by Meta at review and by a
+member on receipt. "Past strength is not a promise" carries real weight here and
+should never be edited out. Only ever fill {{1}} from the Confirmed list: a coin
+with short history in a broadcast is how a bounce gets sold as a trend.
