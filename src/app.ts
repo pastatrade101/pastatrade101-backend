@@ -52,6 +52,20 @@ const app = express();
 
 app.set('trust proxy', 1);
 
+// No conditional caching on an authenticated JSON API.
+//
+// Express adds an ETag to every JSON response, so a browser re-requesting the
+// admin panel got 304 Not Modified — which carries no body. The page then parsed
+// nothing and fell back to its empty state: zero members, zero templates,
+// connection "Off", rules stuck on "Loading…", all while the API was healthy and
+// the data was there. A live dashboard has nothing to gain from a 304 and
+// everything to lose from one.
+app.set('etag', false);
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 app.use(helmet());
 app.use(
   cors({
