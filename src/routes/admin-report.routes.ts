@@ -22,7 +22,8 @@ import {
   adminSendAnnouncement,
   adminSendMarketAlert,
   adminListNotificationBatches,
-  adminSuggestVariables
+  adminSuggestVariables,
+  adminOutperformers
 } from '../controllers/admin-notifications.controller';
 
 const router = Router();
@@ -48,6 +49,7 @@ router.delete('/report-templates/:id', adminDeleteTemplate);
 router.get('/notifications', adminNotificationStatus);
 router.get('/notifications/history', adminListNotificationBatches);
 router.get('/notifications/suggest', adminSuggestVariables);
+router.get('/notifications/outperformers', adminOutperformers);
 router.get('/notifications/rules/:key/audience', adminPreviewAudience);
 router.put('/notifications/rules/:key', adminUpdateNotificationRule);
 router.post('/notifications/announce', adminSendAnnouncement);

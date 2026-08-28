@@ -2,6 +2,7 @@ import { supabase } from '../../config/supabase';
 import { env } from '../../config/env';
 import { computeExitStrategy } from '../exit-strategy/exitStrategy.service';
 import { computeAltcoinSeason, computeAltcoinSeasonHistory } from '../altcoin-btc/altcoin-season.service';
+import { computeConfidence, computeQuality, type SignalMetrics } from '../altcoin-btc/signal-quality';
 import type { RuleKey } from './notifier.service';
 
 // suggestions.service — fill the announcement form from live data.
@@ -199,6 +200,90 @@ const reportSuggestion = async (): Promise<Suggestion> => {
     source: `Latest published report: ${type}.`,
     live: true
   };
+};
+
+/* ── Coins beating BTC ────────────────────────────────────────────────────── */
+
+export interface CoinCandidate {
+  symbol: string;
+  name: string;
+  signal_label: string;
+  strength_30d: number | null;
+  strength_90d: number | null;
+  confidence: string;
+  quality: string;
+  /**
+   * True only when the app's own checks agree it is a real, held move: a clean
+   * signal AND high confidence — i.e. liquid, 180+ days of history, no abnormal
+   * spike, above the 200-day MA and positive over both 30d and 90d.
+   *
+   * Anything the dashboard labels "Needs confirmation" (an early recovery still
+   * under the 200-day MA) is deliberately NOT confirmed here. Naming those in a
+   * broadcast is how a bounce gets sold as a trend.
+   */
+  confirmed: boolean;
+}
+
+/**
+ * Coins currently beating BTC, strongest first, each carrying the same
+ * confidence/quality verdict the Alt/BTC Lab shows — so a coin named in a
+ * message can never contradict its own page.
+ */
+export const listOutperformers = async (): Promise<{ items: CoinCandidate[]; as_of: string | null }> => {
+  const { data: latest } = await supabase
+    .from('altcoin_btc_signals')
+    .select('date')
+    .order('date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!latest) return { items: [], as_of: null };
+
+  const asOf = (latest as { date: string }).date;
+  const { data } = await supabase
+    .from('altcoin_btc_signals')
+    .select('signal_type, signal_label, details, coin:coins(symbol, name)')
+    .eq('date', asOf);
+
+  const items: CoinCandidate[] = [];
+  for (const r of (data ?? []) as Array<Record<string, unknown>>) {
+    const coinRaw = r.coin as { symbol?: string; name?: string } | Array<{ symbol?: string; name?: string }> | null;
+    const coin = Array.isArray(coinRaw) ? coinRaw[0] : coinRaw;
+    if (!coin?.symbol) continue;
+
+    const d = (r.details ?? {}) as Record<string, number | boolean | null>;
+    const metrics: SignalMetrics = {
+      strength_7d: (d.strength_7d as number) ?? null,
+      strength_30d: (d.strength_30d as number) ?? null,
+      strength_90d: (d.strength_90d as number) ?? null,
+      above_ma50: Boolean(d.above_ma50),
+      above_ma200: Boolean(d.above_ma200),
+      volume_breakout: (d.volume_breakout as number) ?? null,
+      market_cap: (d.market_cap as number) ?? null,
+      total_volume: (d.total_volume as number) ?? null,
+      market_cap_rank: (d.market_cap_rank as number) ?? null,
+      history_days: (d.history_days as number) ?? 0
+    };
+
+    // Beating BTC means positive 30-day strength. The signal_type is the app's
+    // own breakout call and is kept as the label, but the number is the filter.
+    if ((metrics.strength_30d ?? 0) <= 0) continue;
+
+    const confidence = computeConfidence(metrics);
+    const quality = computeQuality(metrics);
+    items.push({
+      symbol: String(coin.symbol).toUpperCase(),
+      name: String(coin.name ?? coin.symbol),
+      signal_label: String(r.signal_label ?? r.signal_type ?? ''),
+      strength_30d: metrics.strength_30d,
+      strength_90d: metrics.strength_90d,
+      confidence,
+      quality,
+      confirmed: quality === 'Clean signal' && confidence === 'High confidence'
+    });
+  }
+
+  items.sort((a, b) => (b.strength_30d ?? -1e9) - (a.strength_30d ?? -1e9));
+  return { items, as_of: asOf };
 };
 
 /* ── Entry point ──────────────────────────────────────────────────────────── */

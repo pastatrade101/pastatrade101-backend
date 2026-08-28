@@ -4,7 +4,7 @@ import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { isConnectConfigured, listTemplates } from '../services/notifications/connect.client';
 import { getRule, resolveAudience } from '../services/notifications/notifier.service';
-import { suggestVariables } from '../services/notifications/suggestions.service';
+import { listOutperformers, suggestVariables } from '../services/notifications/suggestions.service';
 import {
   notifyAltcoinBreadth,
   notifyExitThreshold,
@@ -78,6 +78,21 @@ export const adminSuggestVariables = asyncHandler(async (req: Request, res: Resp
     return sendSuccess(res, 'No live data maps to this template.', { live: false, variables: [], labels: [], source: '' });
   }
   return sendSuccess(res, suggestion.live ? 'Filled from live data.' : suggestion.source, suggestion);
+});
+
+/**
+ * Coins beating BTC right now, so an admin picks from the real list instead of
+ * typing tickers from memory. Each carries the same confidence/quality verdict
+ * the Alt/BTC Lab shows, and `confirmed` marks the ones the app's own checks
+ * agree on — clean signal AND high confidence.
+ */
+export const adminOutperformers = asyncHandler(async (_req: Request, res: Response) => {
+  const { items, as_of } = await listOutperformers();
+  return sendSuccess(res, items.length ? 'Outperformers fetched.' : 'No signals yet — run a Lab price-series sync.', {
+    items,
+    as_of,
+    confirmed_count: items.filter((i) => i.confirmed).length
+  });
 });
 
 export const adminSendAnnouncement = asyncHandler(async (req: Request, res: Response) => {
