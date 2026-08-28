@@ -6,7 +6,7 @@ Submit each template in WhatsApp Manager > Message templates > Create template.
 
 BEFORE YOU START — the two things that decide whether these get approved:
 
-1. CATEGORY = UTILITY (not Marketing) for all four.
+1. CATEGORY = UTILITY (not Marketing) for all five.
    Utility templates deliver reliably, can be sent outside the 24-hour window,
    and do not get throttled. Marketing templates are rate-limited, need stricter
    opt-in, and drive blocks. That is why every CTA below is ONE soft line. If you
@@ -169,6 +169,61 @@ Weekly | Cautious | https://pastatrade101.com/reports/weekly-2024-03-18
 
 
 ================================================================================
+5. pastatrade_alt_leaders        [Utility]   send BY HAND, not on a rule
+================================================================================
+Names the specific coins beating BTC. Pair this with the coin picker in
+Admin > WhatsApp: pick the confirmed ones, hit "Insert coins", and {{1}} is
+filled with the live list.
+
+This one is deliberately MANUAL. The others fire on a state change the app
+detects; which coins to name is a judgement call, and a rule that broadcast a
+ticker list on a schedule would eventually name something that had already
+rolled over.
+
+--- BODY (English) ---
+Pastatrade101 · Beating BTC
+
+Confirmed stronger than BTC right now: {{1}}
+
+Breadth: {{2}} of altcoins are outperforming.
+
+See the full list and why: {{3}}
+
+Past strength is not a promise. Not financial advice.
+
+--- BODY (Swahili) ---
+Pastatrade101 · Zinazoshinda BTC
+
+Zilizothibitishwa kuwa na nguvu kuliko BTC sasa: {{1}}
+
+Upana: {{2}} ya altcoins zinashinda.
+
+Ona orodha kamili na sababu: {{3}}
+
+Nguvu ya zamani si ahadi. Si ushauri wa kifedha.
+
+--- VARIABLES ---
+{{1}}  PUMP, ENA, SPX, ZEC, SOL
+{{2}}  50%
+{{3}}  https://pastatrade101.com/app/altcoin-btc-lab
+
+--- SAMPLE FOR META ---
+PUMP, ENA, SPX, ZEC, SOL | 50% | https://pastatrade101.com/app/altcoin-btc-lab
+
+NOTES:
+- Keep {{1}} to about 5 tickers. A long list reads as a shill, and WhatsApp
+  truncates the preview.
+- "Confirmed" is not decoration. The picker only marks a coin confirmed when the
+  app's own checks agree: quality "Clean signal" AND "High confidence", meaning
+  liquid, 180+ days of history, no abnormal spike, above the 200-day MA, and
+  positive over both 30d and 90d. Untick "Confirmed only" and you can name a
+  coin that is up 268% on three weeks of history — which is exactly the kind of
+  message that costs trust when it reverses.
+- The "Past strength is not a promise" line is doing real work here. This is the
+  only template that names individual assets, so it is the one most likely to be
+  read as a buy list.
+
+================================================================================
 OPTIONAL — the Premium line
 ================================================================================
 If you want an upgrade nudge, add this as the LAST line of templates 1-3. One
@@ -184,7 +239,7 @@ already how your product is built (rule-based "Signal read" vs the AI
 interpretation), so the line describes a real extra rather than a paywall on
 something you just sent.
 
-RECOMMENDATION: submit templates 1-4 WITHOUT the Premium line first and get them
+RECOMMENDATION: submit templates 1-5 WITHOUT the Premium line first and get them
 approved. Add the line as a template edit afterwards. A rejected template is a
 7-day wait; a rejected edit leaves the approved version live.
 
@@ -206,5 +261,6 @@ Per-member rate limits already seeded (the SQL sets these):
   exit.threshold_crossed  168h between, max 1/day
   altcoin.signal          96h between, max 1/day
   report.published        24h between, max 1/day
+  (pastatrade_alt_leaders has no rule — it is sent by hand from the composer.)
 Plus WHATSAPP_MAX_PER_RUN (default 200) as a hard ceiling per tick that the
 admin panel cannot raise.
