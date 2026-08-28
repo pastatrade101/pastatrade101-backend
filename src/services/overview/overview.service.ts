@@ -129,7 +129,21 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
     supabase.from('ecosystems').select('name, metrics:ecosystem_metrics(strength_score, signal)').eq('is_active', true),
     supabase.from('coins').select('coingecko_id, symbol, name, image_url, current_price, price_change_pct_24h, market_cap_rank, total_volume').lte('market_cap_rank', 150).not('price_change_pct_24h', 'is', null).order('market_cap_rank', { ascending: true }),
     supabase.from('reports').select('title, slug, report_type, market_status, premium_takeaway, published_at').eq('status', 'published').order('published_at', { ascending: false }).limit(1).maybeSingle(),
-    supabase.from('sync_jobs').select('source, job_type, status, finished_at').order('finished_at', { ascending: false }).limit(40),
+    // Only jobs that actually FINISHED SUCCESSFULLY can date the data.
+    //
+    // Without the status filter this asked for "the newest row per source" and
+    // got the wrong one: Postgres sorts NULLs FIRST on a DESC order, so every
+    // in-flight `running` job (finished_at = null) floated to the top and
+    // shadowed the completed run underneath it. latestFor() then returned null
+    // and isStale(null) is true by definition — so the dashboard declared its
+    // data stale precisely while a sync was refreshing it.
+    supabase
+      .from('sync_jobs')
+      .select('source, job_type, status, finished_at')
+      .eq('status', 'success')
+      .not('finished_at', 'is', null)
+      .order('finished_at', { ascending: false })
+      .limit(40),
     supabase.from('derivatives_daily').select('leverage_risk, label').order('date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('macro_regime_daily').select('regime_score, regime_label').order('date', { ascending: false }).limit(1).maybeSingle()
   ]);
@@ -246,7 +260,10 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
 
   // ── Data freshness ──
   const jobList = (jobs ?? []) as { source: string; job_type: string; status: string; finished_at: string | null }[];
-  const latestFor = (re: RegExp): string | null => jobList.find((j) => re.test(`${j.source} ${j.job_type}`))?.finished_at ?? null;
+  // Belt and braces: even if the query above is ever relaxed, an unfinished job
+  // must never be mistaken for the last successful sync.
+  const latestFor = (re: RegExp): string | null =>
+    jobList.find((j) => j.finished_at && j.status === 'success' && re.test(`${j.source} ${j.job_type}`))?.finished_at ?? null;
   const marketSynced = latestFor(/coingecko|global|market|price/i) ?? global.captured_at;
   const data_freshness = {
     market: { at: marketSynced, label: ago(marketSynced), stale: isStale(marketSynced, 6) },
