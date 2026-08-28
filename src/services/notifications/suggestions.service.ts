@@ -299,11 +299,65 @@ export const ruleForTemplate = (templateName: string): RuleKey | null => {
 };
 
 /**
+ * The coin-list template has no RULE — it is sent by hand, because which coins
+ * to name is a judgement call. Matched separately, and loosely, so whatever the
+ * template ends up being called ("beating_btc", "alt_leaders", "leaders") still
+ * gets its blanks filled.
+ */
+const isLeadersTemplate = (templateName: string): boolean =>
+  /beating[_-]?btc|alt[_-]?leaders|leaders|outperform/i.test(templateName);
+
+/**
+ * "Confirmed stronger than BTC right now: PUMP, ENA, SPX, ZEC, SOL"
+ *
+ * Only confirmed coins are offered — clean signal AND high confidence. The
+ * strongest 30-day number on the board is usually a coin with three weeks of
+ * history, and naming that sells a bounce as a trend.
+ */
+const leadersSuggestion = async (): Promise<Suggestion> => {
+  const labels = ['Coins (confirmed)', 'Breadth', 'Link'];
+  const { items } = await listOutperformers();
+  const confirmed = items.filter((c) => c.confirmed);
+  if (!confirmed.length) {
+    return empty(
+      labels,
+      items.length
+        ? `${items.length} coins are beating BTC, but none are confirmed right now — pick manually below if you still want to send.`
+        : 'No Alt/BTC signals yet — run a Lab price-series sync.'
+    );
+  }
+
+  // Five is the practical ceiling: more reads as a shill and WhatsApp truncates
+  // the preview anyway.
+  const top = confirmed.slice(0, 5);
+
+  let breadth = '';
+  try {
+    const season = await computeAltcoinSeason();
+    breadth = `${Math.round(season.outperforming_btc_percent)}%`;
+  } catch {
+    /* the admin can fill it in; the coin list is the point of this message */
+  }
+
+  return {
+    variables: [top.map((c) => c.symbol).join(', '), breadth, `${site()}/app/altcoin-btc-lab`],
+    labels,
+    source: `${confirmed.length} of ${items.length} coins beating BTC are confirmed; the strongest ${top.length} are filled in.`,
+    live: true
+  };
+};
+
+/**
  * The values this template would carry if it were sent right now.
  * Unknown templates return nothing — a manual announcement has no live source,
  * and guessing would be worse than an empty form.
  */
 export const suggestVariables = async (templateName: string): Promise<Suggestion | null> => {
+  // Checked first: "beating_btc" contains none of the rule keywords, and this
+  // template is the one that most needs filling — a hand-typed ticker list is
+  // how a coin that already rolled over reaches every opted-in member.
+  if (isLeadersTemplate(templateName)) return leadersSuggestion();
+
   switch (ruleForTemplate(templateName)) {
     case 'risk.band_changed':
       return riskBandSuggestion();

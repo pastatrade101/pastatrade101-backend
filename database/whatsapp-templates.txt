@@ -169,11 +169,14 @@ Weekly | Cautious | https://pastatrade101.com/reports/weekly-2024-03-18
 
 
 ================================================================================
-5. pastatrade_alt_leaders        [Utility]   send BY HAND, not on a rule
+5. pastatrade_beating_btc        [Utility]   send BY HAND, not on a rule
 ================================================================================
-Names the specific coins beating BTC. Pair this with the coin picker in
-Admin > WhatsApp: pick the confirmed ones, hit "Insert coins", and {{1}} is
-filled with the live list.
+Names the specific coins beating BTC.
+
+Selecting it in Admin > WhatsApp FILLS THE BLANKS AUTOMATICALLY with the live
+confirmed leaders and the current breadth. The coin picker underneath lets you
+swap the selection before sending. (The name is matched loosely, so
+pastatrade_alt_leaders or pastatrade_beating_btc both work.)
 
 This one is deliberately MANUAL. The others fire on a state change the app
 detects; which coins to name is a judgement call, and a rule that broadcast a
