@@ -7,9 +7,10 @@ import { getBitcoinWikipediaViews } from '../sources/wikimedia.client';
 import {
   alignToDates,
   buildMetricRows,
+  carryForward,
   logRegressionResidual,
   mayerMultipleSeries,
-  normalizeMinMax,
+  normalizeMinMaxFrom,
   runningAthRatio,
   rsiSeries,
   type Nullable,
@@ -106,15 +107,22 @@ export const syncRisk = async (): Promise<number> => {
   );
 
   // ── normalize each into 0..1 risk ──
+  // Scale on the published window only. Pre-STORE_FROM days are still computed
+  // (the regression fit wants them) but must not set any metric's denominator:
+  // 2010-2011 price action produced readings no modern value can approach, and
+  // including them flattened those metrics to a constant ~0.
+  const scaleFrom = dates.findIndex((d) => d >= STORE_FROM);
+  const scaled = (series: Nullable[]) => normalizeMinMaxFrom(series, scaleFrom < 0 ? 0 : scaleFrom);
+
   const risk: Record<string, Nullable[]> = {
-    log_regression: normalizeMinMax(logResid),
-    mayer_multiple: normalizeMinMax(mayer),
-    price_drawdown: normalizeMinMax(athRatio), // near ATH → near 1 → high risk
+    log_regression: scaled(logResid),
+    mayer_multiple: scaled(mayer),
+    price_drawdown: scaled(athRatio), // near ATH → near 1 → high risk
     rsi_risk: rsi.map((v) => (v === null ? null : v / 100)),
     fear_greed: fngRaw.map((v) => (v === null ? null : v / 100)), // greed → high risk
-    wikipedia_views: normalizeMinMax(wikiRaw.map((v) => (v === null ? null : Math.log(v + 1)))),
+    wikipedia_views: scaled(wikiRaw.map((v) => (v === null ? null : Math.log(v + 1)))),
     // Each on-chain metric: higher reading → higher cycle risk → min-max to 0..1.
-    ...Object.fromEntries(Object.entries(onchainRaw).map(([k, series]) => [k, normalizeMinMax(series)]))
+    ...Object.fromEntries(Object.entries(onchainRaw).map(([k, series]) => [k, scaled(series)]))
   };
   const rawByMetric: Record<string, Nullable[]> = {
     log_regression: logResid,
@@ -135,39 +143,56 @@ export const syncRisk = async (): Promise<number> => {
   }
 
   // ── aggregate category + summary per day ──
+  // Carry each metric's own last reading forward, rather than each category's.
+  // Feeds go stale independently, so a metric routinely vanishes from a day: the
+  // on-chain trio stopped reporting after 2026-09-16 while price kept updating.
+  // Per-category carry never covered that, because the category still had one
+  // live metric — so its value silently became "whatever is left", and the
+  // composite lurched on the feed, not the market. (The 2026-09-17 dip to 0.177
+  // was exactly this.) Stored metric rows stay untouched: only the aggregation
+  // sees carried values, so the UI never displays a reading that never arrived.
+  const CARRY_DAYS = 7;
+  const carriedRisk: Record<string, Nullable[]> = Object.fromEntries(
+    Object.keys(CATEGORY).map((key) => [key, carryForward(risk[key] ?? [], CARRY_DAYS)])
+  );
+
   const emptyBucket = (): Record<Category, number[]> => ({ price: [], social: [], onchain: [] });
   const perDay = new Map<string, Record<Category, number[]>>();
-  for (const row of metricRows) {
-    if (row.risk === null) continue;
-    const bucket = perDay.get(row.date) ?? emptyBucket();
-    bucket[CATEGORY[row.metric_key]].push(row.risk);
-    perDay.set(row.date, bucket);
-  }
-
-  // Daily on-chain/social sources lag price by ~1 day, which would leave the most
-  // recent days price-only. Carry each category's last value forward up to 7 days
-  // so the headline composite keeps blending all available categories.
-  const CARRY_DAYS = 7;
-  const daysBetween = (a: string, b: string) => (Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000;
-  const lastSeen: Partial<Record<Category, { date: string; value: number }>> = {};
+  dates.forEach((date, i) => {
+    if (date < STORE_FROM) return;
+    const bucket = emptyBucket();
+    let any = false;
+    for (const key of Object.keys(CATEGORY)) {
+      const value = carriedRisk[key]?.[i];
+      if (value === null || value === undefined) continue;
+      bucket[CATEGORY[key]].push(value);
+      any = true;
+    }
+    if (any) perDay.set(date, bucket);
+  });
 
   const categoryRows: Record<string, unknown>[] = [];
   const summaryRows: Record<string, unknown>[] = [];
   for (const date of [...perDay.keys()].sort()) {
     const b = perDay.get(date)!;
-    const catAverages: number[] = [];
+    // Weight each category by how many metrics stand behind it, rather than
+    // giving all three an equal third. Equal thirds handed 33% of the headline
+    // to `social` (one metric: Wikipedia pageviews, a series that has decayed
+    // structurally and no longer rises) and another 33% to `onchain`, so a real
+    // move across the five price metrics was diluted threefold against two
+    // near-static readings. Count-weighting makes the composite the plain
+    // average of the metrics that exist, and lets a category regain influence
+    // automatically as its feeds come back.
+    let weighted = 0;
+    let totalWeight = 0;
     for (const category of CATEGORIES) {
-      const today = mean(b[category]);
-      if (today !== null) lastSeen[category] = { date, value: today };
-      const carried = lastSeen[category];
-      const value = today !== null ? today : carried && daysBetween(carried.date, date) <= CARRY_DAYS ? carried.value : null;
-      if (value !== null) {
-        categoryRows.push({ snapshot_date: date, category, risk: value });
-        catAverages.push(value);
-      }
+      const value = mean(b[category]);
+      if (value === null) continue;
+      categoryRows.push({ snapshot_date: date, category, risk: value });
+      weighted += value * b[category].length;
+      totalWeight += b[category].length;
     }
-    const summary = mean(catAverages);
-    if (summary !== null) summaryRows.push({ snapshot_date: date, summary_risk: summary });
+    if (totalWeight > 0) summaryRows.push({ snapshot_date: date, summary_risk: weighted / totalWeight });
   }
 
   // ── persist ──

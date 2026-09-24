@@ -3,20 +3,79 @@ import type { DailyPoint } from '../sources/blockchaincom.client';
 // Pure functions for the Pastatrade Risk model. Risk ∈ [0,1]: 0 = historically low
 // risk (attractive accumulation), 1 = high risk (attractive distribution).
 //
-// Normalization note: we min-max each metric over its FULL history. That uses
-// hindsight (a future ATH rescales past risk), which is fine for a descriptive
-// dashboard but must NOT be read as a backtested signal. Flagged here on purpose.
+// Normalization note: we min-max each metric over its PUBLISHED history (see
+// normalizeMinMaxFrom). That still uses hindsight — a future ATH rescales past
+// risk — which is fine for a descriptive dashboard but must NOT be read as a
+// backtested signal. Flagged here on purpose.
 
 export type Nullable = number | null;
 
+/** Min/max of the finite entries, by loop — the series is long enough that
+ *  Math.min(...arr) risks a call-stack overflow as history grows. */
+const extent = (values: Nullable[], startIndex = 0): { min: number; max: number } | null => {
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = Math.max(0, startIndex); i < values.length; i += 1) {
+    const v = values[i];
+    if (v === null || !Number.isFinite(v)) continue;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return min === Infinity ? null : { min, max };
+};
+
 /** Min-max scale to [0,1] over non-null values. Flat series → 0.5. */
-export const normalizeMinMax = (values: Nullable[]): Nullable[] => {
-  const finite = values.filter((v): v is number => v !== null && Number.isFinite(v));
-  if (!finite.length) return values.map(() => null);
-  const min = Math.min(...finite);
-  const max = Math.max(...finite);
-  const range = max - min;
-  return values.map((v) => (v === null || !Number.isFinite(v) ? null : range === 0 ? 0.5 : (v - min) / range));
+export const normalizeMinMax = (values: Nullable[]): Nullable[] => normalizeMinMaxFrom(values, 0);
+
+/**
+ * Min-max scale to [0,1], deriving the scale from `startIndex` onward only.
+ *
+ * Why the window: the pipeline computes over the FULL price series (the log
+ * regression fit needs it) but only publishes rows from STORE_FROM. Scaling on
+ * the full series let pre-publication history set the denominator forever — a
+ * single 2010-08-18 reading pinned the Mayer multiple's max at 200x (the real
+ * post-2012 max is 8.2), which squashed every modern value to ~0 and made the
+ * metric contribute "maximum safety" no matter what price did. Values before
+ * the window are still scaled, and clamped, so they can't escape [0,1].
+ */
+export const normalizeMinMaxFrom = (values: Nullable[], startIndex: number): Nullable[] => {
+  const span = extent(values, startIndex) ?? extent(values, 0);
+  if (!span) return values.map(() => null);
+  const range = span.max - span.min;
+  return values.map((v) =>
+    v === null || !Number.isFinite(v)
+      ? null
+      : range === 0
+        ? 0.5
+        : Math.min(1, Math.max(0, (v - span.min) / range))
+  );
+};
+
+/**
+ * Hold each non-null reading forward over up to `maxGap` following nulls.
+ *
+ * Feeds land on different schedules — price is daily, BGeometrics on-chain can
+ * lag several days, Wikipedia by one — so a metric routinely just vanishes from
+ * a day. Left alone that silently changes the shape of any composite built on
+ * top, making it lurch when a feed goes stale rather than when the market moves.
+ * Gaps longer than `maxGap` stay null so a dead feed drops out honestly.
+ */
+export const carryForward = (values: Nullable[], maxGap: number): Nullable[] => {
+  const out = values.slice();
+  let last: number | null = null;
+  let age = 0;
+  for (let i = 0; i < out.length; i += 1) {
+    const v = out[i];
+    if (v !== null && Number.isFinite(v)) {
+      last = v;
+      age = 0;
+      continue;
+    }
+    if (last === null) continue;
+    age += 1;
+    if (age <= maxGap) out[i] = last;
+  }
+  return out;
 };
 
 /** Residual of ln(price) vs a ln(time) least-squares regression — the "log regression" metric. */
