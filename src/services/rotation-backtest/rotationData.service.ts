@@ -1,9 +1,11 @@
 import { supabase } from '../../config/supabase';
 import { cached } from '../../utils/cache';
 import { readSeries } from '../series/store';
+import { prehistoryKey, withPrehistory } from './prehistory';
 
-// Reads the SAVED daily closes (daily_prices 'cg:<id>', filled by sync:prices) and
-// aligns them into one date × coin matrix for the rotation engine. Never calls an
+// Reads the SAVED daily closes (daily_prices 'cg:<id>', filled by sync:prices, preceded
+// by the Binance prehistory 'bn:<id>' from backfill:rotation-prices — see prehistory.ts)
+// and aligns them into one date × coin matrix for the rotation engine. Never calls an
 // upstream API — same rule as every other Lab.
 
 export interface UniverseCoin {
@@ -18,6 +20,8 @@ export interface PriceMatrix {
   dates: string[];
   prices: Record<string, (number | null)[]>;
   coins: UniverseCoin[]; // tradable coins with data, by current market-cap rank
+  /** First day of the CoinGecko history; days before it come from Binance (null if there is no prehistory). */
+  coingeckoFrom: string | null;
 }
 
 // Belt and braces: the volatility filter below already drops these, but a brand-new
@@ -81,32 +85,49 @@ const mapLimit = async <T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out;
 };
 
+export interface CandidateCoin {
+  coingecko_id: string;
+  symbol: string;
+  name: string;
+  image_url: string | null;
+  market_cap_rank: number;
+}
+
+/** Coins the Lab may rank: current top ~110 by market cap, minus stables and tokenised funds. */
+export const loadCandidateCoins = async (): Promise<CandidateCoin[]> => {
+  const { data, error } = await supabase
+    .from('coins')
+    .select('coingecko_id, symbol, name, image_url, market_cap_rank')
+    .not('market_cap_rank', 'is', null)
+    .lte('market_cap_rank', 110)
+    .order('market_cap_rank', { ascending: true });
+  if (error) throw new Error(`Failed to read coins: ${error.message}`);
+  return (data ?? []).filter(
+    (c) => c.coingecko_id && !EXCLUDED_IDS.has(c.coingecko_id) && !STABLE_SYMBOLS.has(String(c.symbol ?? '').toUpperCase())
+  ) as CandidateCoin[];
+};
+
+/** A coin's saved daily closes: the Binance prehistory, then CoinGecko. */
+const readHistory = async (coingeckoId: string) => {
+  const [pre, cg] = await Promise.all([readSeries(prehistoryKey(coingeckoId)), readSeries(`cg:${coingeckoId}`)]);
+  return { series: withPrehistory(pre, cg), cgFrom: cg[0]?.date ?? null };
+};
+
 /**
- * Every rankable coin (current top ~110 by market cap, minus stables and cash-like
- * tokens) with its saved daily closes, aligned on BTC's calendar. Cached 30 min —
- * prices sync daily, and the first load reads ~80 series (several seconds).
+ * Every rankable coin with its saved daily closes, aligned on BTC's calendar.
+ * Cached 30 min — prices sync daily, and the first load reads ~160 series (several seconds).
  */
 export const loadPriceMatrix = (): Promise<PriceMatrix> =>
   cached(
     'rotation:matrix',
     async () => {
-      const { data, error } = await supabase
-        .from('coins')
-        .select('coingecko_id, symbol, name, image_url, market_cap_rank')
-        .not('market_cap_rank', 'is', null)
-        .lte('market_cap_rank', 110)
-        .order('market_cap_rank', { ascending: true });
-      if (error) throw new Error(`Failed to read coins: ${error.message}`);
-
-      const candidates = (data ?? []).filter(
-        (c) => c.coingecko_id && !EXCLUDED_IDS.has(c.coingecko_id) && !STABLE_SYMBOLS.has(String(c.symbol ?? '').toUpperCase())
-      );
-      const btcSeries = await readSeries('cg:bitcoin');
+      const candidates = await loadCandidateCoins();
+      const { series: btcSeries, cgFrom } = await readHistory('bitcoin');
       if (btcSeries.length < MIN_BARS) throw new Error('BTC daily series is missing — run the price-series sync first.');
       const dates = btcSeries.map((p) => p.date);
       const index = new Map(dates.map((d, i) => [d, i]));
 
-      const loaded = await mapLimit(candidates, CONCURRENCY, async (c) => ({ c, series: await readSeries(`cg:${c.coingecko_id}`) }));
+      const loaded = await mapLimit(candidates, CONCURRENCY, async (c) => ({ c, series: (await readHistory(c.coingecko_id)).series }));
 
       const prices: Record<string, (number | null)[]> = {};
       const coins: UniverseCoin[] = [];
@@ -130,7 +151,8 @@ export const loadPriceMatrix = (): Promise<PriceMatrix> =>
           rank: c.market_cap_rank
         });
       }
-      return { dates, prices, coins };
+      const coingeckoFrom = cgFrom && dates[0] < cgFrom ? cgFrom : null;
+      return { dates, prices, coins, coingeckoFrom };
     },
     1800
   );

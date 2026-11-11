@@ -241,7 +241,9 @@ export const runRotationBacktest = async (p: RunParams) => {
     score_unit: SIGNALS[p.signal].unit,
     warnings,
     assumptions: [
-      'Daily closing prices from CoinGecko (00:00 UTC), read from Pastatrade’s saved price history.',
+      m.coingeckoFrom && result.dates[0] < m.coingeckoFrom
+        ? `Daily prices at 00:00 UTC from Pastatrade’s saved price history: Binance USDT prices before ${m.coingeckoFrom}, CoinGecko from then on. Coins Binance does not list only have data from ${m.coingeckoFrom}.`
+        : 'Daily closing prices from CoinGecko (00:00 UTC), read from Pastatrade’s saved price history.',
       `Signals use only data up to each rebalance day; trades fill at the NEXT day’s close.`,
       `Equal weight per slot at entry (1/${p.top_n} of equity); holdings drift between rebalances.`,
       ...(p.filter === 'none' ? [] : [`Filter: ${FILTERS[p.filter]}. Cash earns nothing.`]),
