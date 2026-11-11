@@ -9,7 +9,9 @@
     "start": "node dist/server.js",
     "sync": "tsx src/scripts/run-sync.ts",
     "sync:prices": "tsx src/scripts/run-sync-prices.ts",
-    "backfill:rotation-prices": "tsx src/scripts/backfill-rotation-prices.ts"
+    "backfill:rotation-prices": "tsx src/scripts/backfill-rotation-prices.ts",
+    "bot:rotation": "tsx src/scripts/rotation-bot.ts",
+    "test:bot": "tsx src/scripts/test-rotation-bot.ts"
   },
   "optionalDependencies": {
     "google-trends-api": "^4.9.2"
