@@ -4,6 +4,7 @@
  * Pure functions, no I/O — exits non-zero on any failure.
  */
 import { decide, rankAt, runRotation, scoreAt, type EngineInput, type EngineParams } from '../services/rotation-backtest/engine';
+import { buildPrehistory, withPrehistory, type DailyOpen } from '../services/rotation-backtest/prehistory';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -158,6 +159,40 @@ console.log('rule plan (what a review on the last day says)');
   const r = runRotation(make(prices));
   const same = decide(r.finalHoldings.map((h) => h.coin).sort(), r.finalRanking, base);
   check('plan = decide(final holdings, final ranking)', JSON.stringify(same.adds) === JSON.stringify(r.plan.add) && same.keep.join() === r.plan.keep.join());
+}
+
+
+console.log('prehistory (Binance before CoinGecko)');
+{
+  const day = (i: number) => new Date(Date.UTC(2025, 0, 1 + i)).toISOString().slice(0, 10);
+  // CoinGecko from day 100; Binance from day 0 (listing day) to day 160.
+  const cg = Array.from({ length: 100 }, (_, i) => ({ date: day(100 + i), value: 100 + i }));
+  const candles: DailyOpen[] = Array.from({ length: 161 }, (_, i) => ({ date: day(i), open: (100 + (i - 100)) * 1.001 }));
+  candles[0].open = 1; // a silly listing-day first trade
+
+  const ok = buildPrehistory(candles, cg, day(0));
+  check('keeps Binance days before the first CoinGecko day only', ok.ok && ok.rows[0].date === day(1) && ok.rows[ok.rows.length - 1].date === day(99), JSON.stringify(ok).slice(0, 120));
+  check('drops the listing day', ok.ok && !ok.rows.some((r) => r.date === day(0)));
+  check('reports how closely the sources match', ok.ok && Math.abs(ok.gapPct - 0.1) < 0.01 && ok.overlapDays === 61);
+  const late = buildPrehistory(candles, cg, day(50));
+  check('respects --from', late.ok && late.rows[0].date === day(50));
+
+  const otherToken = buildPrehistory(candles.map((c) => ({ ...c, open: c.open * 0.5 })), cg, day(0));
+  check('refuses a ticker whose price does not match CoinGecko', !otherToken.ok && /different token/.test(otherToken.reason));
+  const split = candles.map((c, i) => ({ ...c, open: i < 40 ? c.open * 1000 : c.open }));
+  const s = buildPrehistory(split, cg, day(0));
+  check('refuses a history with an impossible one-day jump', !s.ok && /in one day/.test(s.reason), JSON.stringify(s));
+  const newer = buildPrehistory(candles.slice(120), cg, day(0));
+  check('nothing to do when Binance starts after CoinGecko', !newer.ok && newer.nothingToDo === true);
+  const few = buildPrehistory(candles.slice(0, 105), cg, day(0));
+  check('refuses when there are too few days to compare', !few.ok && !few.nothingToDo);
+
+  const merged = withPrehistory(
+    [{ date: day(0), value: 1 }, { date: day(100), value: 999 }],
+    [{ date: day(100), value: 100 }, { date: day(101), value: 101 }]
+  );
+  check('joins prehistory then CoinGecko, CoinGecko wins on overlap', merged.map((p) => p.value).join() === '1,100,101');
+  check('no CoinGecko history → no prehistory either', withPrehistory([{ date: day(0), value: 1 }], []).length === 0);
 }
 
 console.log(failures ? `\n${failures} test(s) FAILED` : '\nAll rotation engine tests passed.');

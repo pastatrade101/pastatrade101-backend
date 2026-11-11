@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "sync": "tsx src/scripts/run-sync.ts",
-    "sync:prices": "tsx src/scripts/run-sync-prices.ts"
+    "sync:prices": "tsx src/scripts/run-sync-prices.ts",
+    "backfill:rotation-prices": "tsx src/scripts/backfill-rotation-prices.ts"
   },
   "optionalDependencies": {
     "google-trends-api": "^4.9.2"
