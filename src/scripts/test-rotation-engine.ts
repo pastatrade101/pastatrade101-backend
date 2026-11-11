@@ -3,7 +3,7 @@
  * Run:  npx tsx src/scripts/test-rotation-engine.ts
  * Pure functions, no I/O — exits non-zero on any failure.
  */
-import { rankAt, runRotation, scoreAt, type EngineInput, type EngineParams } from '../services/rotation-backtest/engine';
+import { decide, rankAt, runRotation, scoreAt, type EngineInput, type EngineParams } from '../services/rotation-backtest/engine';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -128,6 +128,36 @@ console.log('rebalance cadence');
   const weekly = runRotation(make(prices, { rebalanceDays: 7 }));
   check('weekly rebalances ≈ 1/7 as often', weekly.stats.rebalances === Math.ceil((N - 1 - 10) / 7), String(weekly.stats.rebalances));
   check('daily rebalances every bar but the last', daily.stats.rebalances === N - 1 - 10);
+}
+
+console.log('rule plan (what a review on the last day says)');
+{
+  // Fixed ordering d > c > b > a; topN 2 holds c, d → a review today keeps both.
+  const prices = { a: growth(0.001), b: growth(0.002), c: growth(0.003), d: growth(0.004) };
+  const r = runRotation(make(prices, { rebalanceDays: 7 }));
+  check('plan keeps what the rule holds when nothing changed', r.plan.keep.join(',') === 'c,d' && !r.plan.drop.length && !r.plan.add.length);
+  check('plan is dated on the last bar', r.plan.asOf === dates[N - 1]);
+  // Reviews at bars 10, 17, …; last review before bar 119 is 115; next is 122 → 3 days after the end.
+  check('last review = most recent review bar', r.plan.lastReview === dates[115], r.plan.lastReview ?? 'null');
+  check('next review = next cadence step after the data', r.plan.nextReview === '2025-05-03', r.plan.nextReview);
+  check('no cash slots when fully invested', r.plan.cashSlots === 0);
+}
+{
+  // A holding that fails the filter on the last day must be listed as a drop,
+  // and the free slot either refilled or left as cash.
+  const late = growth(0.004).map((v, i) => (i >= N - 12 ? growth(0.004)[N - 13] * 0.97 ** (i - (N - 13)) : v));
+  const prices = { a: growth(0.001), b: growth(0.002), late };
+  const r = runRotation(make(prices, { topN: 1, worstRankHeld: 1, filter: 'positive', rebalanceDays: 30 }));
+  const dropped = r.plan.drop.find((x) => x.coin === 'late');
+  check('a holding that stopped qualifying is listed as a drop', !!dropped, JSON.stringify(r.plan));
+  check('its slot is refilled from the ranking', r.plan.add.length + r.plan.cashSlots === 1);
+}
+{
+  // Plan uses the same rules as the backtest: replaying decide() on the final ranking matches.
+  const prices = { a: growth(0.001), b: growth(0.004), c: growth(0.003), d: growth(0.002) };
+  const r = runRotation(make(prices));
+  const same = decide(r.finalHoldings.map((h) => h.coin).sort(), r.finalRanking, base);
+  check('plan = decide(final holdings, final ranking)', JSON.stringify(same.adds) === JSON.stringify(r.plan.add) && same.keep.join() === r.plan.keep.join());
 }
 
 console.log(failures ? `\n${failures} test(s) FAILED` : '\nAll rotation engine tests passed.');

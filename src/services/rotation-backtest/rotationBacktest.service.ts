@@ -214,6 +214,30 @@ export const runRotationBacktest = async (p: RunParams) => {
       score: SIGNALS[p.signal].unit === '%' ? r2(r.score * 100) : r2(r.score),
       in_hold_band: r.rank <= p.worst_rank_held
     })),
+    // What a review on the last day of data would do, by the same rule as the backtest.
+    // Framed as the rule's output ("the rule would…"), never as advice to a person.
+    rule_plan: {
+      as_of: result.plan.asOf,
+      last_review: result.plan.lastReview,
+      next_review: result.plan.nextReview,
+      review_due_today: result.plan.reviewDueToday,
+      keep: result.plan.keep.map(sym),
+      drop: result.plan.drop.map((d) => ({
+        symbol: sym(d.coin),
+        reason:
+          d.reason === 'unrankable'
+            ? p.filter === 'positive'
+              ? 'no longer rising'
+              : p.filter === 'beat_btc'
+                ? 'no longer beating BTC'
+                : 'no ranking data'
+            : `fell below #${p.worst_rank_held}`
+      })),
+      add: result.plan.add.map(sym),
+      cash_slots: result.plan.cashSlots,
+      slots: p.top_n,
+      slot_weight_pct: r2(100 / p.top_n)
+    },
     score_unit: SIGNALS[p.signal].unit,
     warnings,
     assumptions: [
