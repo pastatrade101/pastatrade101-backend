@@ -115,6 +115,26 @@ export interface OpenPosition {
   weightPct: number;
 }
 
+/**
+ * What the rule says if it is reviewed on the last bar, from the positions it holds
+ * then and that bar's ranking — the same `decide()` the backtest uses on every
+ * review, so the "what to do" list can never disagree with the backtest.
+ */
+export interface RulePlan {
+  asOf: string;
+  /** Last bar on which the rule was reviewed (whether or not it changed anything). */
+  lastReview: string | null;
+  /** Next scheduled review on the rebalance cadence (may be after the data ends). */
+  nextReview: string;
+  /** True when the last bar is itself a scheduled review day. */
+  reviewDueToday: boolean;
+  keep: string[];
+  drop: { coin: string; reason: Exclude<ExitReason, 'end'> }[];
+  add: string[];
+  /** Slots left empty (cash) after the drops and adds. */
+  cashSlots: number;
+}
+
 export interface EngineResult {
   dates: string[];
   equity: { strategy: number[]; btc: number[] };
@@ -127,7 +147,39 @@ export interface EngineResult {
   finalHoldings: OpenPosition[];
   /** Ranking computed on the final bar (current strength, not a forecast). */
   finalRanking: RankRow[];
+  plan: RulePlan;
 }
+
+/**
+ * One review of the rule: which holdings to drop (ranked outside the hold band, or
+ * unrankable) and which coins fill the free slots (best-ranked not already held,
+ * never from outside the hold band). `ranking` must be sorted best first.
+ */
+export const decide = (held: string[], ranking: RankRow[], P: Pick<EngineParams, 'topN' | 'worstRankHeld'>) => {
+  const rankOf = new Map(ranking.map((r) => [r.coin, r.rank]));
+  const drops = new Map<string, Exclude<ExitReason, 'end'>>();
+  for (const coin of held) {
+    const r = rankOf.get(coin);
+    if (r === undefined) drops.set(coin, 'unrankable');
+    else if (r > P.worstRankHeld) drops.set(coin, 'rank');
+  }
+  const heldSet = new Set(held);
+  let free = P.topN - (held.length - drops.size);
+  const adds: string[] = [];
+  for (const row of ranking) {
+    if (free <= 0 || row.rank > P.worstRankHeld) break;
+    if (heldSet.has(row.coin)) continue;
+    adds.push(row.coin);
+    free -= 1;
+  }
+  return { drops, adds, keep: held.filter((c) => !drops.has(c)) };
+};
+
+const addDays = (isoDate: string, days: number): string => {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
 
 const BARS_PER_YEAR = 365;
 
@@ -264,6 +316,9 @@ export const runRotation = (input: EngineInput): EngineResult => {
   const events: RebalanceEvent[] = [];
   const equity: number[] = [];
   let finalHoldings: OpenPosition[] = [];
+  let lastReviewIndex = -1;
+  const finalRanking = rankAt(input, P.signal, P.lookbackDays, end, P.filter);
+  let plan: RulePlan | null = null;
 
   const equityNow = (): number => {
     let v = cash;
@@ -327,8 +382,23 @@ export const runRotation = (input: EngineInput): EngineResult => {
       if (sold.length || bought.length) events.push({ date: dates[t], bought, sold, held: [...positions.keys()].sort() });
     }
 
-    // 2) Last bar: report what was held, then close everything.
+    // 2) Last bar: report what was held and what a review now would do, then close everything.
     if (t === end) {
+      const held = [...positions.keys()].sort();
+      const now = decide(held, finalRanking, P);
+      const sinceStart = end - s;
+      const reviewDueToday = sinceStart % P.rebalanceDays === 0;
+      const stepsToNext = reviewDueToday ? P.rebalanceDays : P.rebalanceDays - (sinceStart % P.rebalanceDays);
+      plan = {
+        asOf: dates[end],
+        lastReview: lastReviewIndex >= 0 ? dates[lastReviewIndex] : null,
+        nextReview: addDays(dates[end], stepsToNext),
+        reviewDueToday,
+        keep: now.keep,
+        drop: [...now.drops].map(([coin, reason]) => ({ coin, reason })),
+        add: now.adds,
+        cashSlots: Math.max(0, P.topN - now.keep.length - now.adds.length)
+      };
       const eq = equityNow();
       finalHoldings = [...positions].map(([coin, pos]) => {
         const lp = lastPrice.get(coin) ?? pos.entryPrice;
@@ -354,22 +424,11 @@ export const runRotation = (input: EngineInput): EngineResult => {
     // 4) Rebalance decision — uses bars <= t only; fills happen on bar t + 1.
     if (t < end && (t - s) % P.rebalanceDays === 0) {
       rebalances += 1;
-      const rankOf = new Map(rankAt(input, P.signal, P.lookbackDays, t, P.filter).map((r) => [r.coin, r.rank]));
+      lastReviewIndex = t;
+      const review = decide([...positions.keys()], rankAt(input, P.signal, P.lookbackDays, t, P.filter), P);
       pendingSells.clear();
-      for (const coin of positions.keys()) {
-        const r = rankOf.get(coin);
-        if (r === undefined) pendingSells.set(coin, 'unrankable');
-        else if (r > P.worstRankHeld) pendingSells.set(coin, 'rank');
-      }
-      let free = P.topN - (positions.size - pendingSells.size);
-      pendingBuys = [];
-      const ranking = [...rankOf].sort((a, b) => a[1] - b[1]);
-      for (const [coin, rank] of ranking) {
-        if (free <= 0 || rank > P.worstRankHeld) break;
-        if (positions.has(coin)) continue;
-        pendingBuys.push(coin);
-        free -= 1;
-      }
+      for (const [coin, reason] of review.drops) pendingSells.set(coin, reason);
+      pendingBuys = review.adds;
     }
   }
 
@@ -413,6 +472,7 @@ export const runRotation = (input: EngineInput): EngineResult => {
     trades,
     events,
     finalHoldings,
-    finalRanking: rankAt(input, P.signal, P.lookbackDays, end, P.filter)
+    finalRanking,
+    plan: plan!
   };
 };
