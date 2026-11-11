@@ -4,6 +4,7 @@ import { getBtcPriceHistory } from '../sources/blockchaincom.client';
 import { coingeckoThrottleMs, getMarketChart, type CgMarketChart } from '../sources/coingecko.client';
 import { upsertSeries, type SeriesRow } from '../series/store';
 import { syncAltBtcSignals } from './sync-altbtc-signals';
+import { stepRotationIndexes } from '../rotation-index/rotationIndex.service';
 
 const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FDUSD', 'USDE', 'PYUSD', 'USDS', 'GUSD']);
 
@@ -100,6 +101,16 @@ export const syncPriceSeries = async (): Promise<number> => {
     console.log(`[price-series] computed ${signals} Alt/BTC signals`);
   } catch (error) {
     console.warn(`[price-series] signal pass skipped: ${error instanceof Error ? error.message : error}`);
+  }
+
+  // Move the Rotation Index forward over the days that just became final.
+  // Non-fatal: a failure here must not fail the price sync.
+  try {
+    for (const r of await stepRotationIndexes()) {
+      console.log(`[price-series] rotation index ${r.id}: ${r.added ? `+${r.added} day(s) to ${r.to}` : r.note ?? 'no new days'}${r.warnings.length ? ` (${r.warnings.join(' ')})` : ''}`);
+    }
+  } catch (error) {
+    console.warn(`[price-series] rotation index step skipped: ${error instanceof Error ? error.message : error}`);
   }
 
   return processed;
