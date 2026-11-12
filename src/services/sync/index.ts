@@ -78,7 +78,7 @@ export const runFullSync = async (triggeredBy?: string): Promise<FullSyncResult>
   steps.push(await run('global', 'coingecko', 'global', () => syncGlobal(btcSignals)));
   steps.push(await run('ecosystems', 'defillama', 'ecosystems', () => syncEcosystems()));
   // Derivatives runs before social so today's leverage euphoria feeds Social Risk.
-  steps.push(await run('derivatives', 'bitget', 'derivatives', () => storeDerivativesDaily()));
+  steps.push(await run('derivatives', 'bgeometrics', 'derivatives', () => storeDerivativesDaily()));
   steps.push(await run('social', 'social', 'social-metrics', () => syncSocialMetrics()));
   steps.push(await run('onchain', 'bgeometrics', 'onchain', () => syncOnchain()));
   // Ensure the risk model is rebuilt even if the on-chain stage failed.

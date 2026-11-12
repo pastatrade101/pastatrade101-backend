@@ -14,6 +14,7 @@ import { computeLogRegression } from '../log-regression/logRegression.service';
 import { buildAltBtcReportSummary } from '../alt-btc-bottom/altBtcBottom.service';
 import { getRadarReportSummary } from '../early-opportunity/earlyOpportunityView.service';
 import { getSupplyProfitLossLatest } from '../sync/supply-profit-loss.service';
+import { derivativeFlags } from '../derivatives/derivatives.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // reportData.service — builds ONE structured snapshot of the whole platform at
@@ -518,19 +519,19 @@ export const buildSnapshot = async (type: ReportType, reportDate: string): Promi
   const buildDerivatives = async (): Promise<ReportSnapshot['derivatives']> => {
     const { data } = await supabase
       .from('derivatives_daily')
-      .select('leverage_risk, leverage_percent, label, btc_funding_rate, btc_open_interest')
+      .select('leverage_risk, leverage_percent, label, btc_funding_rate, btc_open_interest, btc_long_short, components')
       .order('date', { ascending: false })
       .limit(2);
     if (!data || !data.length || data[0].leverage_risk == null) return null;
     const cur = data[0];
-    const prev = data[1];
+    const flags = derivativeFlags(cur, data[1]);
     return {
       leverage_risk: Number(cur.leverage_risk),
       leverage_percent: cur.leverage_percent == null ? Math.round(Number(cur.leverage_risk) * 100) : Number(cur.leverage_percent),
       label: (cur.label as string) ?? 'Normal',
-      funding_high: cur.btc_funding_rate != null && Number(cur.btc_funding_rate) > 0.0003,
-      funding_negative: cur.btc_funding_rate != null && Number(cur.btc_funding_rate) < 0,
-      oi_rising: cur.btc_open_interest != null && prev?.btc_open_interest != null && Number(cur.btc_open_interest) > Number(prev.btc_open_interest) * 1.03
+      funding_high: flags.funding_high,
+      funding_negative: flags.funding_negative,
+      oi_rising: flags.oi_rising
     };
   };
 

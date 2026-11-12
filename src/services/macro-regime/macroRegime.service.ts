@@ -1,12 +1,14 @@
 import { supabase } from '../../config/supabase';
 import { getDailySeries, macroConfigured, type TdPoint } from '../sources/twelvedata.client';
+import { loadMacroInputs, readDollarAndGold, readLiquidity, readStablecoins } from './macroMarket.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Macro Regime — reads the traditional-market backdrop (dollar, equities,
-// volatility, gold, rates) and distils it into a risk-on / risk-off read for
-// crypto. Twelve Data is used INTERNALLY to derive a signal; raw quotes are not
-// stored or displayed — only directional reads. Graceful when symbols/keys are
-// missing (reweights over what's available, like every Pastatrade model).
+// Macro Regime — reads the backdrop for crypto (dollar, equities, volatility,
+// gold, global M2 liquidity, stablecoin supply) and distils it into a
+// risk-on / risk-off read. Sources: BGeometrics (dollar index, gold, M2,
+// stablecoins — shown on the analyst page) and Twelve Data (S&P 500 and VIX
+// ETF proxies, used INTERNALLY only — those raw quotes are never displayed).
+// Graceful when a source is missing: it reweights over what's available.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
@@ -19,20 +21,27 @@ interface Input {
   role: Role;
   weight: number;
   label: string;
+  /** Preferred daily series (BGeometrics); Twelve Data `symbol` is the fallback. */
+  primary?: 'dxy' | 'gold';
 }
 
 // The free Twelve Data plan serves US ETFs + forex, but NOT indices (DXY/VIX) or
 // bond yields. So we use ETF proxies that ARE free: UUP tracks the dollar index,
 // VIXY tracks VIX futures. This keeps the two biggest crypto drivers (dollar +
 // volatility) working on the free tier. Each is optional and reweights.
+// The dollar and gold come from BGeometrics first (the real DXY index and spot
+// gold); UUP / XAU/USD on Twelve Data are only the fallback.
 const INPUTS: Input[] = [
   { symbol: 'SPY', role: 'equities', weight: 0.35, label: 'Equities (S&P 500)' },
-  { symbol: 'UUP', role: 'dollar', weight: 0.35, label: 'US Dollar' },
+  { symbol: 'UUP', role: 'dollar', weight: 0.35, label: 'US Dollar (DXY)', primary: 'dxy' },
   { symbol: 'VIXY', role: 'volatility', weight: 0.2, label: 'Volatility' },
   // XAU/USD (spot gold) is used instead of the GLD ticker — "GLD" resolves
   // ambiguously (e.g. a JSE fund), whereas XAU/USD is unambiguous spot gold in USD.
-  { symbol: 'XAU/USD', role: 'gold', weight: 0.1, label: 'Gold' }
+  { symbol: 'XAU/USD', role: 'gold', weight: 0.1, label: 'Gold', primary: 'gold' }
 ];
+// Crypto-specific liquidity inputs (BGeometrics).
+const LIQUIDITY_WEIGHT = 0.25; // global M2
+const STABLECOIN_WEIGHT = 0.1; // stablecoin supply
 
 interface Analysis {
   last: number;
@@ -68,7 +77,59 @@ interface Component {
   read: string;
   driver: string;
   tone: 'good' | 'warn' | 'neutral';
+  /** Share of the regime score (0–1) and this input's risk-on contribution (0–1). */
+  weight?: number;
+  contribution?: number;
+  source?: string;
 }
+
+const toneOf = (c: number): Component['tone'] => (c >= 0.6 ? 'good' : c <= 0.4 ? 'warn' : 'neutral');
+const signed = (n: number, d = 1) => `${n >= 0 ? '+' : ''}${n.toFixed(d)}%`;
+
+// Global M2: growth vs its own 10-year history, tilted by whether the last
+// 13 weeks run faster or slower than the year.
+const liquidityComponent = (l: NonNullable<ReturnType<typeof readLiquidity>>): { c: number; comp: Component } => {
+  const accel = l.annualised_13w_pct == null ? 0 : l.annualised_13w_pct - l.yoy_pct;
+  const pace = accel > 1 ? 'accelerating' : accel < -1 ? 'slowing' : 'steady';
+  const c = clamp01(0.8 * l.yoy_percentile + 0.2 * clamp01(0.5 + accel / 8));
+  const tone = toneOf(c);
+  return {
+    c,
+    comp: {
+      input: 'Global liquidity (M2)',
+      read: `${l.yoy_pct >= 0 ? 'Expanding' : 'Contracting'} ${signed(l.yoy_pct)} y/y — ${pace}`,
+      driver:
+        l.yoy_pct < 0
+          ? 'global M2 is contracting'
+          : tone === 'good'
+            ? `global M2 is growing ${l.yoy_pct.toFixed(1)}% a year`
+            : tone === 'warn'
+              ? `global M2 growth is weak (${l.yoy_pct.toFixed(1)}% a year)`
+              : `global M2 growth is near its usual pace (${l.yoy_pct.toFixed(1)}% a year)`,
+      tone,
+      source: 'BGeometrics'
+    }
+  };
+};
+
+// Stablecoin supply: the 30-day change vs the last 3 years of 30-day changes.
+const stablecoinComponent = (st: NonNullable<ReturnType<typeof readStablecoins>>): { c: number; comp: Component } | null => {
+  if (st.chg_30d_pct == null) return null;
+  const c = clamp01(st.chg_30d_percentile ?? 0.5 + st.chg_30d_pct / 6);
+  const ch = st.chg_30d_pct;
+  return {
+    c,
+    comp: {
+      input: 'Stablecoin supply',
+      read: `${signed(ch)} in 30 days — ${ch > 0.5 ? 'fresh capital arriving' : ch < -0.5 ? 'capital leaving' : 'flat'}`,
+      driver: ch > 0.5 ? 'stablecoin supply is growing' : ch < -0.5 ? 'stablecoin supply is shrinking' : 'stablecoin supply is flat',
+      tone: toneOf(c),
+      source: 'BGeometrics'
+    }
+  };
+};
+
+const toTd = (pts: [string, number][]): TdPoint[] => pts.slice(-60).map(([date, close]) => ({ date, close }));
 
 const describe = (input: Input, a: Analysis, c: number): Component => {
   // Tone follows the directional read so the colour matches the word (a sideways
@@ -130,17 +191,31 @@ const buildInterpretation = (score: number, comps: Component[]): string => {
 };
 
 export const computeMacroRegime = async (): Promise<MacroRegimeResult> => {
-  const analyzed: { input: Input; a: Analysis }[] = [];
-  if (macroConfigured()) {
-    for (const input of INPUTS) {
-      const s = await getDailySeries(input.symbol, 60);
-      const a = analyze(s);
-      if (a) analyzed.push({ input, a });
+  const bg = await loadMacroInputs().catch(() => null);
+  const dg = bg ? readDollarAndGold(bg.macro) : { dxy: [], gold: [], btcGold: [] };
+  const analyzed: { input: Input; a: Analysis; source: string }[] = [];
+  for (const input of INPUTS) {
+    const fromBg = input.primary === 'dxy' ? dg.dxy : input.primary === 'gold' ? dg.gold : [];
+    let a = fromBg.length >= 25 ? analyze(toTd(fromBg)) : null;
+    let source = 'BGeometrics';
+    if (!a && macroConfigured()) {
+      a = analyze(await getDailySeries(input.symbol, 60));
+      source = 'Twelve Data';
       await sleep(2200); // respect the 8-credits/min free limit
     }
+    if (a) analyzed.push({ input, a, source });
   }
+  const liq = bg ? readLiquidity(bg.m2, bg.m2yoy) : null;
+  const st = bg ? readStablecoins(bg.stables) : null;
+  const extra = [
+    liq ? { weight: LIQUIDITY_WEIGHT, ...liquidityComponent(liq) } : null,
+    st ? (() => {
+      const x = stablecoinComponent(st);
+      return x ? { weight: STABLECOIN_WEIGHT, ...x } : null;
+    })() : null
+  ].filter(Boolean) as { weight: number; c: number; comp: Component }[];
 
-  if (!analyzed.length) {
+  if (!analyzed.length && !extra.length) {
     return {
       as_of: new Date().toISOString(),
       regime_score: null,
@@ -157,15 +232,23 @@ export const computeMacroRegime = async (): Promise<MacroRegimeResult> => {
   let acc = 0;
   const components: Component[] = [];
   let dollar_trend: MacroRegimeResult['dollar_trend'] = 'unknown';
-  for (const { input, a } of analyzed) {
+  for (const { input, a, source } of analyzed) {
     const c = contribution(input.role, a);
     wsum += input.weight;
     acc += input.weight * c;
-    components.push(describe(input, a, c));
+    components.push({ ...describe(input, a, c), weight: input.weight, contribution: Number(c.toFixed(3)), source });
     if (input.role === 'dollar') dollar_trend = a.direction === 'up' ? 'strengthening' : a.direction === 'down' ? 'weakening' : 'stable';
   }
+  for (const x of extra) {
+    wsum += x.weight;
+    acc += x.weight * x.c;
+    components.push({ ...x.comp, weight: x.weight, contribution: Number(x.c.toFixed(3)) });
+  }
+  // Report each input's share of the score (weights renormalised over what's live).
+  for (const comp of components) comp.weight = Number(((comp.weight ?? 0) / (wsum || 1)).toFixed(3));
   const regime_score = Math.round(100 * clamp01(acc / (wsum || 1)));
-  const confidence: MacroRegimeResult['confidence'] = analyzed.length >= 4 ? 'High' : analyzed.length >= 2 ? 'Medium' : 'Low';
+  const n = components.length;
+  const confidence: MacroRegimeResult['confidence'] = n >= 5 ? 'High' : n >= 3 ? 'Medium' : 'Low';
 
   return {
     as_of: new Date().toISOString(),
@@ -173,7 +256,7 @@ export const computeMacroRegime = async (): Promise<MacroRegimeResult> => {
     regime_label: labelFor(regime_score),
     dollar_trend,
     confidence,
-    symbols_used: analyzed.length,
+    symbols_used: components.length,
     components,
     interpretation: buildInterpretation(regime_score, components)
   };
