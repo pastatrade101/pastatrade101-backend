@@ -7,7 +7,7 @@ import { env } from '../../config/env';
 // who its members are and what it wants to say. This file is the seam, and it is
 // deliberately thin — no retries that could double-send, no queue of its own.
 //
-// Inert without CONNECT_API_KEY, exactly like the payment and AI providers: no
+// Inert without CONNECT_API_KEY, exactly like the payment providers: no
 // key, no call, no error.
 
 export interface TemplateComponent {

@@ -31,7 +31,7 @@ const envSchema = z.object({
   // WhatsApp notifications — delivered through Makutano Connect, which owns the
   // number, the templates and Meta compliance. Blank key → the whole notifier is
   // inert: rules can be edited, nothing is ever sent. Same shape as the payment
-  // and AI keys above.
+  // keys above.
   CONNECT_API_URL: z.string().url().default('https://connect.makutano.co.tz'),
   CONNECT_API_KEY: z.string().optional().or(z.literal('')),
   // A hard ceiling the admin panel cannot raise, so a mis-set rule cannot mail
@@ -45,10 +45,6 @@ const envSchema = z.object({
   BITCOIN_DATA_API_KEY: z.string().optional().or(z.literal('')),
   // Optional social sources (graceful if blank).
   YOUTUBE_API_KEY: z.string().optional().or(z.literal('')),
-  // Anthropic (Claude) — powers the premium AI market synthesis. Blank → feature
-  // silently disabled, the deterministic rule-based verdict is served instead.
-  ANTHROPIC_API_KEY: z.string().optional().or(z.literal('')),
-  ANTHROPIC_MODEL: z.string().optional().or(z.literal('')),
   // SerpApi Google Trends (preferred provider). Blank → unofficial connector → none.
   SERPAPI_API_KEY: z.string().optional().or(z.literal('')),
   // Twelve Data (macro regime: DXY / SPY / VIX / gold). Blank → module unavailable.
