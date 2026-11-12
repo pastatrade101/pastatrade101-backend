@@ -61,7 +61,10 @@ interface OnchainStatus {
   last_synced: string | null;
   days_covered: number;
   metrics: string[];
-  latest: Record<string, { raw: number | null; risk: number | null }>;
+  latest: Record<string, { raw: number | null; risk: number | null; date: string | null }>;
+  /** Days the slowest metric trails the newest one (≈7 when the key is on the free plan). */
+  lag_days: number | null;
+  realtime: boolean;
   last_job: Record<string, unknown> | null;
   supply_profit_loss: { last_synced: string | null; days_covered: number; profit_percent: number | null; loss_percent: number | null } | null;
 }
@@ -78,11 +81,25 @@ export const getOnchainStatus = async (): Promise<OnchainStatus> => {
     .maybeSingle();
   const lastSynced = latestDate?.snapshot_date ?? null;
 
+  // Each metric's own latest reading — they don't all arrive on the same day.
   const latest: OnchainStatus['latest'] = {};
-  if (lastSynced) {
-    const { data: rows } = await supabase.from('risk_metric_daily').select('metric_key, raw_value, risk').eq('snapshot_date', lastSynced).in('metric_key', ONCHAIN_KEYS);
-    for (const r of rows ?? []) latest[r.metric_key] = { raw: r.raw_value, risk: r.risk };
-  }
+  await Promise.all(
+    ONCHAIN_KEYS.map(async (key) => {
+      const { data } = await supabase
+        .from('risk_metric_daily')
+        .select('snapshot_date, raw_value, risk')
+        .eq('metric_key', key)
+        .not('raw_value', 'is', null)
+        .order('snapshot_date', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      latest[key] = { raw: data?.raw_value ?? null, risk: data?.risk ?? null, date: data?.snapshot_date ?? null };
+    })
+  );
+  const dayMs = (d: string) => Date.parse(`${d}T00:00:00Z`);
+  const dated = Object.values(latest).filter((v) => v.date) as { date: string }[];
+  const lagDays =
+    lastSynced && dated.length ? Math.max(...dated.map((v) => Math.round((dayMs(lastSynced) - dayMs(v.date)) / 86_400_000))) : null;
 
   const [{ count: covered }, { data: job }, { count: splCovered }, { data: splLatest }] = await Promise.all([
     supabase.from('risk_category_daily').select('snapshot_date', { count: 'exact', head: true }).eq('category', 'onchain'),
@@ -99,6 +116,8 @@ export const getOnchainStatus = async (): Promise<OnchainStatus> => {
     days_covered: covered ?? 0,
     metrics: ONCHAIN_KEYS,
     latest,
+    lag_days: lagDays,
+    realtime: lagDays != null && lagDays <= 2,
     last_job: job ?? null,
     supply_profit_loss: splCovered
       ? {

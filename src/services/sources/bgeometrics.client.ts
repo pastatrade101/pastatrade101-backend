@@ -6,11 +6,12 @@ import type { DailyPoint } from './blockchaincom.client';
 // BGeometrics / bitcoin-data.com — Bitcoin on-chain data API.
 // Docs: https://api.bitcoin-data.com/scalar.html  ·  GET /v1/{slug} → daily
 // history, each row { d: 'YYYY-MM-DD', unixTs, <camelField>: number }.
-// Free plan (what the key is on): 10 requests/hour, 15/day, last 4 years only,
-// and the "Market" and "Net" groups (MVRV, NUPL — and Puell in practice) hold
-// back the latest 7 days. That lag is the plan, not a broken feed. Indicators
-// update daily at 03:00 UTC. Every call degrades to [] on failure so the risk
-// sync never breaks.
+// Plans: the account is on Advanced (200 requests/hour, 300/day, at most 5
+// distinct IPs a day, full history, real-time). A key on the Free plan gets
+// 15 calls/day, only the last 4 years, and the "Market" and "Net" groups
+// (MVRV, NUPL — and Puell in practice) 7 days late; the admin page flags that
+// lag. Indicators update daily at 03:00 UTC. Every call degrades to [] on
+// failure so the risk sync never breaks.
 
 const BASE = 'https://api.bitcoin-data.com/v1';
 
@@ -25,9 +26,6 @@ const METRICS: Record<string, { slug: string; field: string }> = {
 
 export const ONCHAIN_KEYS = Object.keys(METRICS);
 
-/** Metrics the free plan publishes 7 days late (seen on 2026-11-12: last value = today − 7). */
-export const ONCHAIN_DELAYED_KEYS = ['mvrv_zscore', 'puell_multiple', 'nupl'];
-
 interface Row {
   d?: string;
   [field: string]: string | number | undefined;
@@ -39,8 +37,8 @@ const headers = (): Record<string, string> => {
   return key ? { Authorization: `Bearer ${key}` } : {};
 };
 
-// The data changes once a day (03:00 UTC), and the free quota is 15 calls a
-// day, so keep a good answer until shortly after the next update. An empty
+// The data changes once a day (03:00 UTC), so keep a good answer until shortly
+// after the next update (one round of calls a day, well inside any plan). An empty
 // answer (429, network) is NOT kept, so the next scheduled run tries again.
 const secondsUntilNextUpdate = (now = new Date()): number => {
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 3, 15));
