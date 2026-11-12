@@ -10,3 +10,19 @@ export const readSmoothedBtcRisk = async (): Promise<number | null> => {
   const vals = (data ?? []).map((r) => (r.summary_risk == null ? NaN : Number(r.summary_risk))).filter(Number.isFinite);
   return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
 };
+
+// The Risk Dashboard's zones (0.2 / 0.4 / 0.6 / 0.8) with the Overview's wording,
+// so every page that shows BTC risk names the same zone.
+export interface BtcRiskZone {
+  label: string;
+  meaning: string;
+  dca: string;
+}
+
+export const btcRiskZone = (r: number): BtcRiskZone => {
+  if (r < 0.2) return { label: 'Aggressive DCA zone', meaning: 'BTC risk is very low on the current risk model.', dca: 'Aggressive DCA' };
+  if (r < 0.4) return { label: 'Good DCA zone', meaning: 'BTC is not overheated on the current risk model.', dca: 'Good DCA' };
+  if (r < 0.6) return { label: 'Neutral', meaning: 'BTC risk is moderate — neither cheap nor stretched.', dca: 'Neutral — DCA steadily' };
+  if (r < 0.8) return { label: 'Caution', meaning: 'BTC risk is rising — be more selective.', dca: 'Caution — slow down' };
+  return { label: 'Distribution risk', meaning: 'BTC risk is high on this model.', dca: 'Distribution — no aggressive buying' };
+};

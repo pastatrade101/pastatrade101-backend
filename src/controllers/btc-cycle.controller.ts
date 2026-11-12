@@ -2,6 +2,7 @@ import { computeCycleRisk } from '../services/btc-cycle/cycle-risk';
 import { eventsFor } from '../services/btc-cycle/events';
 import { buildCycleRoi } from '../services/btc-cycle/roi';
 import { yearOverlaySeries } from '../services/btc-cycle/year-roi';
+import { btcRiskZone, readSmoothedBtcRisk } from '../services/risk/btcRisk.service';
 import { readSeries } from '../services/series/store';
 import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
@@ -54,8 +55,23 @@ export const getYearOverlay = asyncHandler(async (req, res) => {
 });
 
 // GET /api/v1/btc-cycle/risk-score
+// Cycle Lab's risk card shows the platform's one BTC risk number (7-day smoothed,
+// Risk Dashboard zones) next to the cycle context (RSI, 200D MA, ATH, YTD), so it
+// never shows a second, different "risk" score.
 export const getRiskScore = asyncHandler(async (_req, res) => {
-  const series = await readSeries('btc-full');
+  const [series, btcRisk] = await Promise.all([readSeries('btc-full'), readSmoothedBtcRisk().catch(() => null)]);
   if (series.length < 250) throw new AppError('BTC history unavailable.', 503);
-  return sendSuccess(res, 'Cycle risk score computed.', computeCycleRisk(series));
+  const cycle = computeCycleRisk(series);
+  const zone = btcRisk == null ? null : btcRiskZone(btcRisk);
+  return sendSuccess(res, 'BTC risk and cycle context computed.', {
+    btc_price: cycle.btc_price,
+    risk_score: btcRisk == null ? null : Math.round(btcRisk * 100),
+    risk_label: zone?.label ?? 'Unavailable',
+    reason: zone?.meaning ?? 'Run a risk sync to populate BTC risk.',
+    dca_window: zone?.dca ?? '—',
+    distance_from_200ma: cycle.distance_from_200ma,
+    drawdown_from_ath: cycle.drawdown_from_ath,
+    rsi: cycle.rsi,
+    ytd_roi: cycle.ytd_roi
+  });
 });
