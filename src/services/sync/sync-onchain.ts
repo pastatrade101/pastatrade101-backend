@@ -93,7 +93,7 @@ export const getOnchainStatus = async (): Promise<OnchainStatus> => {
 
   return {
     provider: 'BGeometrics',
-    base_url: 'https://bitcoin-data.com',
+    base_url: 'https://api.bitcoin-data.com',
     key_mode: env.BITCOIN_DATA_API_KEY ? 'keyed' : 'keyless',
     last_synced: lastSynced,
     days_covered: covered ?? 0,

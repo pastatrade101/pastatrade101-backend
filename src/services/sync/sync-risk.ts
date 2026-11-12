@@ -37,8 +37,12 @@ const CATEGORY: Record<string, Category> = {
   mvrv_zscore: 'onchain',
   puell_multiple: 'onchain',
   nupl: 'onchain',
-  reserve_risk: 'onchain'
+  reserve_risk: 'onchain',
+  rhodl_ratio: 'onchain'
 };
+// Ratios that span orders of magnitude (RHODL ≈ 200 → 13,700 over the stored
+// window) are scaled on their log, so the middle of the range isn't squashed to ~0.
+const LOG_SCALED = new Set(['rhodl_ratio']);
 const CATEGORIES: Category[] = ['price', 'social', 'onchain'];
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : null);
@@ -125,7 +129,12 @@ export const syncRisk = async (): Promise<number> => {
     fear_greed: fngRaw.map((v) => (v === null ? null : v / 100)), // greed → high risk
     wikipedia_views: scaled(wikiRaw.map((v) => (v === null ? null : Math.log(v + 1)))),
     // Each on-chain metric: higher reading → higher cycle risk → min-max to 0..1.
-    ...Object.fromEntries(Object.entries(onchainRaw).map(([k, series]) => [k, scaled(series)]))
+    ...Object.fromEntries(
+      Object.entries(onchainRaw).map(([k, series]) => [
+        k,
+        scaled(LOG_SCALED.has(k) ? series.map((v) => (v === null || v <= 0 ? null : Math.log(v))) : series)
+      ])
+    )
   };
   const rawByMetric: Record<string, Nullable[]> = {
     log_regression: logResid,
