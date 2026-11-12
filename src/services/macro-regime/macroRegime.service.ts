@@ -1,5 +1,5 @@
 import { supabase } from '../../config/supabase';
-import { getDailySeries, macroConfigured, type TdPoint } from '../sources/twelvedata.client';
+import { getDailySeries, macroConfigured, twelveDataError, type TdPoint } from '../sources/twelvedata.client';
 import { loadMacroInputs, readDollarAndGold, readLiquidity, readStablecoins } from './macroMarket.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -173,6 +173,8 @@ export interface MacroRegimeResult {
   symbols_used: number;
   components: Component[];
   interpretation: string;
+  /** Inputs that returned no data this time, with the provider's reason. */
+  missing?: { input: string; reason: string }[];
 }
 
 const labelFor = (s: number): string => (s < 20 ? 'Strong risk-off' : s < 40 ? 'Risk-off' : s < 60 ? 'Neutral / mixed' : s < 80 ? 'Risk-on' : 'Strong risk-on');
@@ -194,6 +196,7 @@ export const computeMacroRegime = async (): Promise<MacroRegimeResult> => {
   const bg = await loadMacroInputs().catch(() => null);
   const dg = bg ? readDollarAndGold(bg.macro) : { dxy: [], gold: [], btcGold: [] };
   const analyzed: { input: Input; a: Analysis; source: string }[] = [];
+  const missing: { input: string; reason: string }[] = [];
   for (const input of INPUTS) {
     const fromBg = input.primary === 'dxy' ? dg.dxy : input.primary === 'gold' ? dg.gold : [];
     let a = fromBg.length >= 25 ? analyze(toTd(fromBg)) : null;
@@ -204,6 +207,7 @@ export const computeMacroRegime = async (): Promise<MacroRegimeResult> => {
       await sleep(2200); // respect the 8-credits/min free limit
     }
     if (a) analyzed.push({ input, a, source });
+    else missing.push({ input: input.label, reason: macroConfigured() ? `Twelve Data ${input.symbol}: ${twelveDataError() ?? 'not enough history'}` : 'TWELVE_DATA_API_KEY is not set' });
   }
   const liq = bg ? readLiquidity(bg.m2, bg.m2yoy) : null;
   const st = bg ? readStablecoins(bg.stables) : null;
@@ -224,7 +228,8 @@ export const computeMacroRegime = async (): Promise<MacroRegimeResult> => {
       confidence: 'Low',
       symbols_used: 0,
       components: [],
-      interpretation: macroConfigured() ? 'Macro market data is unavailable right now. This read is skipped until it returns.' : 'Macro regime is not configured (Twelve Data key missing).'
+      interpretation: macroConfigured() ? 'Macro market data is unavailable right now. This read is skipped until it returns.' : 'Macro regime is not configured (Twelve Data key missing).',
+      missing
     };
   }
 
@@ -258,14 +263,20 @@ export const computeMacroRegime = async (): Promise<MacroRegimeResult> => {
     confidence,
     symbols_used: components.length,
     components,
-    interpretation: buildInterpretation(regime_score, components)
+    interpretation: buildInterpretation(regime_score, components),
+    missing
   };
 };
 
 /** Compute + store today's macro regime. Returns 1 when stored, 0 when unavailable. */
 export const storeMacroRegimeDaily = async (): Promise<number> => {
   const r = await computeMacroRegime();
-  if (r.regime_score == null) return 0;
+  const missing = r.missing ?? [];
+  const why = missing.map((m) => `${m.input} (${m.reason})`).join('; ');
+  if (r.regime_score == null) {
+    if (missing.length) throw new Error(`Macro regime not stored — no inputs returned data: ${why}`);
+    return 0;
+  }
   const now = new Date().toISOString();
   const { error } = await supabase.from('macro_regime_daily').upsert(
     {
@@ -277,12 +288,15 @@ export const storeMacroRegimeDaily = async (): Promise<number> => {
       symbols_used: r.symbols_used,
       components: r.components,
       interpretation: r.interpretation,
-      source_status: 'active',
+      source_status: missing.length ? 'partial' : 'active',
       updated_at: now
     },
     { onConflict: 'date' }
   );
   if (error) throw new Error(`Failed to store macro regime: ${error.message}`);
+  // Stored from what was available, but flag the job so a dead key or a
+  // provider outage is visible in the sync log rather than a quiet "success".
+  if (missing.length) throw new Error(`Macro regime stored from ${r.symbols_used} inputs; missing: ${why}`);
   return 1;
 };
 

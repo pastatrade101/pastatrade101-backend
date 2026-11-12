@@ -30,9 +30,11 @@ export const getMacroRegime = asyncHandler(async (_req: Request, res: Response) 
     const fresh = await liveRegime().catch(() => null);
     if (fresh && fresh.regime_score != null) {
       const prevScore = stored && stored.regime_score != null ? Number(stored.regime_score) : null;
+      // Provider error details stay in the server log and sync jobs, not the page.
+      const { missing: _missing, ...pub } = fresh;
       return sendSuccess(res, 'Macro regime computed live (stored score is stale).', {
         available: true,
-        ...fresh,
+        ...pub,
         live: true,
         updated_at: fresh.as_of,
         stored_date: stored?.date ?? null,
