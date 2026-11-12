@@ -40,9 +40,13 @@ const CATEGORY: Record<string, Category> = {
   reserve_risk: 'onchain',
   rhodl_ratio: 'onchain'
 };
-// Ratios that span orders of magnitude (RHODL ≈ 200 → 13,700 over the stored
-// window) are scaled on their log, so the middle of the range isn't squashed to ~0.
-const LOG_SCALED = new Set(['rhodl_ratio']);
+// Positive ratios that span orders of magnitude are scaled on their log. On full
+// history (2012+, BGeometrics Advanced) a plain min-max let one extreme set the
+// scale: Reserve Risk (0.0004 → 0.024) rated the Nov-2021 top 0.09 and Puell
+// (0.3 → 10.2) 0.13; on log they rate it 0.44 / 0.47 and the 2017 top 0.79 / 0.88,
+// with the 2018 and 2022 lows near 0. MVRV Z-Score and NUPL go negative, so they
+// stay linear (they already rate both tops high).
+const LOG_SCALED = new Set(['rhodl_ratio', 'reserve_risk', 'puell_multiple']);
 const CATEGORIES: Category[] = ['price', 'social', 'onchain'];
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : null);
