@@ -145,7 +145,7 @@ export const getHistory = asyncHandler(async (_req, res) => {
 
 // GET /api/v1/risk/onchain-history  → daily on-chain component risks + composite + BTC price.
 // Premium-gated in the route. Values are the normalized 0–1 risk per metric.
-const ONCHAIN_KEYS = ['mvrv_zscore', 'puell_multiple', 'nupl', 'reserve_risk'];
+const ONCHAIN_KEYS = ['mvrv_zscore', 'puell_multiple', 'rhodl_ratio', 'nupl', 'reserve_risk'];
 
 const readOnchainMetricRows = async (): Promise<{ snapshot_date: string; metric_key: string; raw_value: number | null; risk: number | null }[]> => {
   const out: { snapshot_date: string; metric_key: string; raw_value: number | null; risk: number | null }[] = [];
@@ -201,17 +201,19 @@ export const getOnchainHistory = asyncHandler(async (_req, res) => {
       date,
       mvrv_zscore: byDate.get(date)?.mvrv_zscore ?? null,
       puell_multiple: byDate.get(date)?.puell_multiple ?? null,
+      rhodl_ratio: byDate.get(date)?.rhodl_ratio ?? null,
       nupl: byDate.get(date)?.nupl ?? null,
       reserve_risk: byDate.get(date)?.reserve_risk ?? null,
       onchain_risk: onchainByDate.get(date) ?? null,
       btc_price: priceByDate.get(date) ?? null
     }));
 
-  // Latest per-metric raw+risk (date-independent — on-chain lags price by a day,
-  // so the cards must not be tied to "today").
+  // Latest raw+risk per metric — each metric's own last reading (date-independent:
+  // on-chain lags price, and one feed can lag another, so taking only the newest
+  // date would drop whichever metric is a day behind).
   const latestDate = metricRows.length ? metricRows[metricRows.length - 1].snapshot_date : null;
   const latest: Record<string, { raw: number | null; risk: number | null }> = {};
-  if (latestDate) for (const r of metricRows) if (r.snapshot_date === latestDate) latest[r.metric_key] = { raw: r.raw_value, risk: r.risk };
+  for (const r of metricRows) if (r.risk != null) latest[r.metric_key] = { raw: r.raw_value, risk: r.risk };
 
   return sendSuccess(res, 'On-chain history fetched successfully.', { series, latest, latest_date: latestDate });
 });

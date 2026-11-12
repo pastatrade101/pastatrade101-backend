@@ -127,14 +127,20 @@ const nextThreshold = (ladder: LadderStep[], score: number): { risk: number; lab
   return next ? { risk: next.risk, label: next.label } : null;
 };
 
+// BTC risk is the 7-day smoothed score — the same number the Risk page and the
+// Overview show — so Exit Strategy never reads 0.26 next to their 0.27.
+const RISK_SMOOTH_DAYS = 7;
+
 const readRiskLatest = async () => {
-  const { data: latest } = await supabase.from('risk_summary_daily').select('snapshot_date, summary_risk').order('snapshot_date', { ascending: false }).limit(1).maybeSingle();
+  const { data: rows } = await supabase.from('risk_summary_daily').select('snapshot_date, summary_risk').order('snapshot_date', { ascending: false }).limit(RISK_SMOOTH_DAYS);
+  const latest = rows?.[0];
   if (!latest?.snapshot_date) return null;
+  const vals = (rows ?? []).map((r) => (r.summary_risk == null ? NaN : Number(r.summary_risk))).filter(Number.isFinite);
   const { data: cats } = await supabase.from('risk_category_daily').select('category, risk').eq('snapshot_date', latest.snapshot_date as string);
   const byCat = Object.fromEntries((cats ?? []).map((c) => [c.category, c.risk]));
   return {
     date: latest.snapshot_date as string,
-    btc: latest.summary_risk == null ? null : Number(latest.summary_risk),
+    btc: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
     onchain: byCat.onchain == null ? null : Number(byCat.onchain)
   };
 };

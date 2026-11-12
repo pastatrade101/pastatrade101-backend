@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase';
+import { isNonCryptoBeta } from '../utils/asset-class';
 import { getAltBtc } from '../services/altcoin-btc/service';
 import { buildComparisonVerdict, getCompare } from '../services/altcoin-btc/compare.service';
 import { getMarketSnapshot } from '../services/altcoin-btc/market.service';
@@ -19,13 +20,12 @@ import { getQueryNumber, getQueryString } from '../utils/query';
 const DEFAULT_BASKET = ['ethereum', 'solana', 'sui', 'injective-protocol', 'chainlink', 'jupiter-exchange-solana'];
 
 // GET /api/v1/altcoin-btc/coins?search=  → coin selector list (excludes BTC + stablecoins)
-const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FDUSD', 'USDE', 'PYUSD', 'USDS']);
 
 export const listCoins = asyncHandler(async (req, res) => {
   const search = getQueryString(req.query, 'search');
   let query = supabase
     .from('coins')
-    .select('coingecko_id, symbol, name, image_url, market_cap_rank')
+    .select('coingecko_id, symbol, name, image_url, market_cap_rank, current_price, price_change_pct_30d')
     .neq('coingecko_id', 'bitcoin')
     .not('market_cap_rank', 'is', null)
     .order('market_cap_rank', { ascending: true })
@@ -36,7 +36,9 @@ export const listCoins = asyncHandler(async (req, res) => {
   const { data, error } = await query;
   if (error) throw new AppError('Unable to load coins.', 500, [error]);
 
-  const items = (data ?? []).filter((c) => !STABLES.has((c.symbol ?? '').toUpperCase()));
+  const items = (data ?? [])
+    .filter((c) => !isNonCryptoBeta(c))
+    .map(({ current_price: _p, price_change_pct_30d: _d, ...c }) => c);
   return sendSuccess(res, 'Coins fetched successfully.', { items });
 });
 

@@ -33,6 +33,7 @@ const toCoinRow = (c: CgMarketCoin) => ({
  */
 export const syncCoins = async (pages = 1): Promise<number> => {
   let total = 0;
+  const runStart = new Date().toISOString();
 
   for (let page = 1; page <= pages; page += 1) {
     const markets = await getMarkets(page, 250);
@@ -43,6 +44,20 @@ export const syncCoins = async (pages = 1): Promise<number> => {
     if (error) throw new Error(`Failed to upsert coins (page ${page}): ${error.message}`);
 
     total += rows.length;
+  }
+
+  // A coin that falls out of the pulled list keeps its row, frozen at its last
+  // price, change and rank. Left alone it stays "top 150" for months and leaks
+  // stale or glitched moves into movers, breadth, the strongest-signal line and
+  // every rank-filtered list. Clearing the rank drops it from all of them until
+  // it re-enters the list (the next upsert sets the rank again).
+  if (total > 0) {
+    const { error } = await supabase
+      .from('coins')
+      .update({ market_cap_rank: null })
+      .lt('last_synced_at', runStart)
+      .not('market_cap_rank', 'is', null);
+    if (error) throw new Error(`Failed to clear ranks of coins that left the list: ${error.message}`);
   }
 
   return total;

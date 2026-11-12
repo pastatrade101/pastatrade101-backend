@@ -1,4 +1,5 @@
 import type { CgTrendingItem } from '../sources/coingeckoRadar.client';
+import { isNonCryptoBeta } from '../../utils/asset-class';
 import type { GtPool } from '../sources/geckoTerminal.client';
 import { parseGtId } from '../sources/geckoTerminal.client';
 import type { TokenSecurity } from '../sources/goplus.client';
@@ -17,8 +18,7 @@ const numOr = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
-const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FDUSD', 'USDE', 'PYUSD', 'FRAX', 'LUSD', 'USDP', 'GUSD']);
-const isStable = (sym: string) => STABLES.has(sym.toUpperCase());
+const isStable = (sym: string) => isNonCryptoBeta({ symbol: sym });
 const isWrapped = (name: string, sym: string) => /wrapped|staked|^w[a-z]{2,5}$/i.test(name) || /^(WETH|WBTC|WBNB|WSOL|STETH|WSTETH|CBETH)$/i.test(sym);
 
 export interface RadarSettings {

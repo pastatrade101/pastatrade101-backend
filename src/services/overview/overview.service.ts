@@ -1,4 +1,5 @@
 import { supabase } from '../../config/supabase';
+import { isNonCryptoBeta } from '../../utils/asset-class';
 import { readLatestSocialRisk } from '../social/social-latest.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8,7 +9,6 @@ import { readLatestSocialRisk } from '../social/social-latest.service';
 // is safe to hit on every dashboard load.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FDUSD', 'USDE', 'PYUSD', 'USDS', 'GUSD', 'USDP', 'EURT']);
 const MIN_VOL = 10_000_000; // clean-universe 24h volume floor
 
 export type Universe = 'clean' | 'all';
@@ -109,8 +109,10 @@ const liquiditySignal = (stablecoinCap: number | null): Signal => {
 const derivativesSignal = (row: { leverage_risk: number | null; label: string | null } | null): Signal => {
   if (!row || row.leverage_risk == null) return { key: 'derivatives', name: 'Leverage Risk', label: 'Unavailable', value: null, meaning: 'Run a derivatives sync to populate funding & positioning.', tone: 'na', link: '/app/derivatives' };
   const s = Number(row.leverage_risk);
-  const tone = s < 0.4 ? 'good' : s < 0.6 ? 'neutral' : s < 0.75 ? 'warn' : 'danger';
-  const meaning = s < 0.4 ? 'Funding & positioning are calm — leverage is not stretched.' : s < 0.6 ? 'Leverage is moderate.' : s < 0.75 ? 'Leverage is building — watch for over-extension.' : 'Crowded long leverage — a more fragile backdrop.';
+  // Same bands as the label the derivatives sync writes (0.35 / 0.55 / 0.75),
+  // so the card never says "Elevated leverage" next to "Leverage is moderate".
+  const tone = s < 0.35 ? 'good' : s < 0.55 ? 'neutral' : s < 0.75 ? 'warn' : 'danger';
+  const meaning = s < 0.35 ? 'Funding & positioning are calm — leverage is not stretched.' : s < 0.55 ? 'Leverage is moderate.' : s < 0.75 ? 'Leverage is building — watch for over-extension.' : 'Crowded long leverage — a more fragile backdrop.';
   return { key: 'derivatives', name: 'Leverage Risk', label: row.label ?? '', value: `${Math.round(s * 100)}/100`, meaning, tone, link: '/app/derivatives' };
 };
 
@@ -138,7 +140,7 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
     readLatestSocialRisk(),
     supabase.from('asset_log_regression_bands').select('date, zone_label, risk_score, distance_from_fit_percent').eq('asset_symbol', 'BTC').order('date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('ecosystems').select('name, metrics:ecosystem_metrics(strength_score, signal)').eq('is_active', true),
-    supabase.from('coins').select('coingecko_id, symbol, name, image_url, current_price, price_change_pct_24h, market_cap_rank, total_volume').lte('market_cap_rank', 150).not('price_change_pct_24h', 'is', null).order('market_cap_rank', { ascending: true }),
+    supabase.from('coins').select('coingecko_id, symbol, name, image_url, current_price, price_change_pct_24h, price_change_pct_30d, market_cap_rank, total_volume, last_synced_at').lte('market_cap_rank', 150).not('price_change_pct_24h', 'is', null).order('market_cap_rank', { ascending: true }),
     supabase.from('reports').select('title, slug, report_type, market_status, premium_takeaway, published_at').eq('status', 'published').order('published_at', { ascending: false }).limit(1).maybeSingle(),
     // Only jobs that actually FINISHED SUCCESSFULLY can date the data.
     //
@@ -166,9 +168,13 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
   const prevExit = exitRows?.[1] ?? null;
 
   // ── Altcoin breadth proxy: % of liquid top alts beating BTC over 24h ──
-  const allCoins = (coins ?? []) as { coingecko_id: string; symbol: string; name: string; image_url: string | null; current_price: number; price_change_pct_24h: number; market_cap_rank: number; total_volume: number | null }[];
+  const allCoins = (coins ?? []) as { coingecko_id: string; symbol: string; name: string; image_url: string | null; current_price: number; price_change_pct_24h: number; price_change_pct_30d: number | null; market_cap_rank: number; total_volume: number | null; last_synced_at: string | null }[];
   const btc24 = allCoins.find((c) => c.coingecko_id === 'bitcoin')?.price_change_pct_24h ?? 0;
-  const altUniverse = allCoins.filter((c) => c.coingecko_id !== 'bitcoin' && !STABLES.has(c.symbol.toUpperCase()) && !/wrapped|staked|peg/i.test(c.name));
+  // Only coins refreshed by the latest coin sync: a row that fell out of the
+  // pulled list keeps a frozen 24h move (TONIC sat at +22,003% for months).
+  const newestSync = Math.max(0, ...allCoins.map((c) => (c.last_synced_at ? Date.parse(c.last_synced_at) : 0)));
+  const isFresh = (c: (typeof allCoins)[number]) => !!c.last_synced_at && newestSync - Date.parse(c.last_synced_at) < 6 * 3600e3;
+  const altUniverse = allCoins.filter((c) => c.coingecko_id !== 'bitcoin' && isFresh(c) && !isNonCryptoBeta(c) && !/wrapped|staked|peg/i.test(c.name));
   const breadthPct = altUniverse.length ? Math.round((altUniverse.filter((c) => c.price_change_pct_24h > btc24).length / altUniverse.length) * 100) : null;
 
   // ── Movers (clean vs all universe) ──
@@ -258,7 +264,7 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
   const readParts: string[] = [];
   readParts.push(signals.btc_risk.tone === 'good' ? 'BTC remains in an accumulation-friendly zone' : signals.btc_risk.tone === 'danger' ? 'BTC risk is elevated' : 'BTC risk is moderate');
   readParts.push(breadthPct == null ? 'altcoin breadth is unavailable' : breadthPct < 45 ? 'but altcoin strength is still selective' : breadthPct >= 55 ? 'and altcoin strength is broadening' : 'with mixed altcoin strength');
-  const dailyRead = `${readParts.join(', ')}. BTC dominance is ${pct1(dom)}, meaning Bitcoin ${dom >= 52 ? 'still controls market direction' : 'is sharing direction with altcoins'}. ${global.market_cap_change_24h != null && Math.abs(Number(global.market_cap_change_24h)) < 1 ? 'Market cap is mostly flat today' : `Total market cap is ${Number(global.market_cap_change_24h) >= 0 ? 'expanding' : 'contracting'} today`}, and social attention is ${social.score == null ? 'unavailable' : social.score < 0.5 ? 'not euphoric' : 'rising'}. ${exitRow ? `Exit signal is ${exitRow.strategy_label}.` : ''} This suggests a ${posture.toLowerCase()} environment.`;
+  const dailyRead = `${readParts.join(', ')}. BTC dominance is ${pct1(dom)}, meaning Bitcoin ${dom >= 52 ? 'still controls market direction' : 'is sharing direction with altcoins'}. ${global.market_cap_change_24h != null && Math.abs(Number(global.market_cap_change_24h)) < 1 ? 'Market cap is mostly flat today' : `Total market cap is ${Number(global.market_cap_change_24h) >= 0 ? 'expanding' : 'contracting'} today`}, and social attention is ${social.score == null ? 'unavailable' : social.score < 0.5 ? 'not euphoric' : 'rising'}. ${exitRow ? `Exit signal is ${exitRow.strategy_label}.` : ''} This suggests ${/^[aeiou]/i.test(posture) ? 'an' : 'a'} ${posture.toLowerCase()} environment.`;
 
   // ── Market condition card (enriched) ──
   const condConfidence = btcRisk != null && social.score != null ? 'Medium' : 'Low';

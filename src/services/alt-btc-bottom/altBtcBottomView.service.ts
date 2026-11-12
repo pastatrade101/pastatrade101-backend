@@ -1,4 +1,5 @@
 import { supabase } from '../../config/supabase';
+import { readSmoothedBtcRisk } from '../risk/btcRisk.service';
 import { readSeriesFull } from '../series/store';
 import { statusScoreLabel } from './altBtcBottom.service';
 
@@ -53,8 +54,7 @@ const marketContext = async (breadth: { above_ma50_percent?: number } | null) =>
   }
   let btc_risk: number | null = null;
   try {
-    const { data } = await supabase.from('risk_summary_daily').select('summary_risk').order('snapshot_date', { ascending: false }).limit(1).maybeSingle();
-    btc_risk = data?.summary_risk == null ? null : Number(data.summary_risk);
+    btc_risk = await readSmoothedBtcRisk();
   } catch {
     /* optional */
   }

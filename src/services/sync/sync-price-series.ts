@@ -1,4 +1,5 @@
 import { supabase } from '../../config/supabase';
+import { isNonCryptoBeta } from '../../utils/asset-class';
 import { cacheClear } from '../../utils/cache';
 import { getBtcPriceHistory } from '../sources/blockchaincom.client';
 import { coingeckoThrottleMs, getMarketChart, type CgMarketChart } from '../sources/coingecko.client';
@@ -6,7 +7,6 @@ import { upsertSeries, type SeriesRow } from '../series/store';
 import { syncAltBtcSignals } from './sync-altbtc-signals';
 import { stepRotationIndexes } from '../rotation-index/rotationIndex.service';
 
-const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FDUSD', 'USDE', 'PYUSD', 'USDS', 'GUSD']);
 
 // Always include BTC + the Lab baskets so default selections always have data,
 // even if one drifts out of the top 100.
@@ -65,14 +65,14 @@ export const syncPriceSeries = async (): Promise<number> => {
   // 2) Resolve the CoinGecko coin set: top 100 by market cap (ex-stables) + ALWAYS.
   const { data: top } = await supabase
     .from('coins')
-    .select('coingecko_id, symbol, market_cap_rank')
+    .select('coingecko_id, symbol, name, market_cap_rank, current_price, price_change_pct_30d')
     .lte('market_cap_rank', 100)
     .not('market_cap_rank', 'is', null)
     .order('market_cap_rank', { ascending: true });
 
   const ids = new Set<string>(ALWAYS);
   for (const c of top ?? []) {
-    if (c.coingecko_id && !STABLES.has((c.symbol ?? '').toUpperCase())) ids.add(c.coingecko_id);
+    if (c.coingecko_id && !isNonCryptoBeta(c)) ids.add(c.coingecko_id);
   }
 
   // 3) Fetch + persist each (throttled).

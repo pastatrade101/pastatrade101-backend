@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase';
+import { isNonCryptoBeta } from '../utils/asset-class';
 import {
   annualReturns,
   dcaByWeekday,
@@ -17,7 +18,6 @@ import { getQueryNumber, getQueryString } from '../utils/query';
 const FOUR_YEARS_AGO = () => new Date(Date.now() - 4 * 365 * 86_400_000).toISOString().slice(0, 10);
 
 // Common stablecoins to exclude from the altcoin-season breadth count.
-const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FDUSD', 'USDE', 'PYUSD', 'USDS', 'GUSD']);
 
 // GET /api/v1/charts  → the catalog
 export const getCatalog = asyncHandler(async (_req, res) => {
@@ -35,13 +35,13 @@ const altcoinSeason = async () => {
 
   const { data: top } = await supabase
     .from('coins')
-    .select('symbol, name, return_30d, market_cap_rank, image_url')
+    .select('symbol, name, return_30d, market_cap_rank, image_url, current_price, price_change_pct_30d')
     .lte('market_cap_rank', 50)
     .not('return_30d', 'is', null)
     .neq('coingecko_id', 'bitcoin')
     .order('market_cap_rank', { ascending: true });
 
-  const alts = (top ?? []).filter((c) => !STABLES.has((c.symbol ?? '').toUpperCase()));
+  const alts = (top ?? []).filter((c) => !isNonCryptoBeta(c));
   const outperformers = alts.filter((c) => Number(c.return_30d) > Number(btc30));
   const value = alts.length ? Math.round((outperformers.length / alts.length) * 100) : 0;
   const label = value >= 75 ? 'Altcoin Season' : value <= 25 ? 'Bitcoin Season' : 'Neutral';

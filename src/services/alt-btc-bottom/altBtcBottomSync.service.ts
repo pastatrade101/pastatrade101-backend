@@ -1,4 +1,5 @@
 import { supabase } from '../../config/supabase';
+import { isNonCryptoBeta } from '../../utils/asset-class';
 import { readSeriesFull } from '../series/store';
 import { buildBreadth, computeAltBtc, type AltBtcMetrics, type CoinMeta } from './altBtcBottom.service';
 
@@ -9,8 +10,12 @@ const loadUniverse = async (): Promise<CoinMeta[]> => {
   const { data: keys } = await supabase.from('daily_prices').select('series_key').like('series_key', 'cg:%').limit(5000);
   const ids = [...new Set((keys ?? []).map((k) => (k.series_key as string).slice(3)))].filter((id) => id && id !== 'bitcoin');
   if (!ids.length) return [];
-  const { data: coins } = await supabase.from('coins').select('coingecko_id, symbol, name, market_cap_rank, total_volume').in('coingecko_id', ids);
+  const { data: coins } = await supabase.from('coins').select('coingecko_id, symbol, name, market_cap_rank, total_volume, current_price, price_change_pct_30d').in('coingecko_id', ids);
   return (coins ?? [])
+    // A stored series can outlive the coin's place in the list: skip coins that
+    // left the tracked list (no rank) and stablecoins / gold / fund tokens, which
+    // "recover against BTC" every time BTC falls.
+    .filter((c) => c.market_cap_rank != null && !isNonCryptoBeta(c))
     .map((c) => ({ coin_id: c.coingecko_id as string, symbol: (c.symbol as string)?.toUpperCase() ?? '', name: (c.name as string) ?? '', market_cap_rank: c.market_cap_rank as number | null, volume: c.total_volume as number | null }))
     .sort((a, b) => (a.market_cap_rank ?? 9999) - (b.market_cap_rank ?? 9999));
 };

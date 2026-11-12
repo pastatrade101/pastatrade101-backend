@@ -1,4 +1,5 @@
 import { supabase } from '../../config/supabase';
+import { readSmoothedBtcRisk } from '../risk/btcRisk.service';
 import { AppError } from '../../utils/api-response';
 import { tokenSecurityDetail } from '../sources/goplus.client';
 import { getLatestMacroRegime } from '../macro-regime/macroRegime.service';
@@ -77,13 +78,13 @@ const toReportChart = (r: ChartIntelligenceResult): ReportChart => {
 const marketContext = async (): Promise<MarketContext> => {
   const [macro, riskRow, derivRow, alt] = await Promise.all([
     getLatestMacroRegime().catch(() => null),
-    supabase.from('risk_summary_daily').select('summary_risk').order('snapshot_date', { ascending: false }).limit(1).maybeSingle(),
+    readSmoothedBtcRisk().catch(() => null),
     supabase.from('derivatives_daily').select('leverage_risk').order('date', { ascending: false }).limit(1).maybeSingle(),
     computeAltcoinSeason('30d', 'premium_clean').catch(() => null)
   ]);
   return {
     macro_score: macro?.regime_score ?? null,
-    btc_risk: riskRow.data?.summary_risk != null ? Number(riskRow.data.summary_risk) : null,
+    btc_risk: riskRow,
     leverage_risk: derivRow.data?.leverage_risk != null ? Number(derivRow.data.leverage_risk) : null,
     alt_season: alt ? Number(alt.altcoin_season_index) : null
   };

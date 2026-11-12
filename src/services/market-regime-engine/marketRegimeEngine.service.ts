@@ -1,4 +1,5 @@
 import { supabase } from '../../config/supabase';
+import { readSmoothedBtcRisk } from '../risk/btcRisk.service';
 import { computeAltcoinSeason } from '../altcoin-btc/altcoin-season.service';
 import { readLatestSocialRisk } from '../social/social-latest.service';
 
@@ -87,7 +88,7 @@ export const getMarketRegimeSnapshot = async (): Promise<MarketRegimeSnapshot> =
 
   const [globalsRes, riskRes, derivRes, alt, social] = await Promise.all([
     supabase.from('global_market_snapshots').select('btc_dominance, eth_dominance, total_market_cap, stablecoin_market_cap, btc_price, eth_price, captured_at').order('captured_at', { ascending: false }).limit(30),
-    supabase.from('risk_summary_daily').select('summary_risk').order('snapshot_date', { ascending: false }).limit(1).maybeSingle(),
+    readSmoothedBtcRisk().catch(() => null),
     supabase.from('derivatives_daily').select('leverage_risk').order('date', { ascending: false }).limit(1).maybeSingle(),
     computeAltcoinSeason('30d', 'premium_clean').catch(() => null),
     readLatestSocialRisk().catch(() => null)
@@ -106,7 +107,7 @@ export const getMarketRegimeSnapshot = async (): Promise<MarketRegimeSnapshot> =
   if (dom.trend === 'rising' && domStrength === 'strong') warnings.push({ label: 'BTC Dominance Rising', message: 'Bitcoin dominance is rising strongly — capital is rotating away from altcoins.', severity: 'high' });
 
   // ── 2 · BTC risk level (existing risk model, 0–1) ──
-  const btcRiskVal = riskRes.data?.summary_risk != null ? Number(riskRes.data.summary_risk) : null;
+  const btcRiskVal = riskRes;
   const btcRiskLevel: Level4 = btcRiskVal == null ? 'unknown' : btcRiskVal < 0.35 ? 'low' : btcRiskVal < 0.6 ? 'medium' : btcRiskVal < 0.8 ? 'high' : 'extreme';
   const btcRisk = { level: btcRiskLevel, scoreImpact: btcRiskLevel === 'low' ? 6 : btcRiskLevel === 'medium' ? 0 : btcRiskLevel === 'high' ? -6 : btcRiskLevel === 'extreme' ? -10 : 0 };
   if (btcRiskLevel === 'extreme') warnings.push({ label: 'Extreme BTC Risk', message: 'The BTC risk model is in its extreme zone — historically hostile for speculative altcoins.', severity: 'critical' });

@@ -1,7 +1,7 @@
 import { supabase } from '../../config/supabase';
+import { isNonCryptoBeta } from '../../utils/asset-class';
 import { getAltBtc } from '../altcoin-btc/service';
 
-const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FDUSD', 'USDE', 'PYUSD', 'USDS', 'GUSD']);
 
 /**
  * Compute breakout/weakness signals for the tracked altcoins from the saved
@@ -12,7 +12,7 @@ const STABLES = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FDUSD',
 export const syncAltBtcSignals = async (): Promise<number> => {
   const { data: coins } = await supabase
     .from('coins')
-    .select('id, coingecko_id, symbol, name, market_cap, total_volume, market_cap_rank')
+    .select('id, coingecko_id, symbol, name, market_cap, total_volume, market_cap_rank, current_price, price_change_pct_30d')
     .lte('market_cap_rank', 100)
     .not('market_cap_rank', 'is', null)
     .order('market_cap_rank', { ascending: true });
@@ -23,7 +23,7 @@ export const syncAltBtcSignals = async (): Promise<number> => {
   const rows: Record<string, unknown>[] = [];
 
   for (const c of coins) {
-    if (!c.coingecko_id || c.coingecko_id === 'bitcoin' || STABLES.has((c.symbol ?? '').toUpperCase())) continue;
+    if (!c.coingecko_id || c.coingecko_id === 'bitcoin' || isNonCryptoBeta(c)) continue;
     try {
       const r = await getAltBtc(c.coingecko_id);
       if (!r.points.length) continue;

@@ -1,4 +1,5 @@
 import { supabase } from '../../config/supabase';
+import { isNonCryptoBeta } from '../../utils/asset-class';
 import { readSeries } from '../series/store';
 import type { DailyPoint } from '../sources/blockchaincom.client';
 
@@ -95,7 +96,7 @@ const priceAt = (pts: DailyPoint[], targetTs: number): number | null => {
   return res >= 0 ? pts[res].value : null;
 };
 
-const isStable = (c: Coin) => STABLES.has(c.symbol.toUpperCase());
+const isStable = (c: Coin) => STABLES.has(c.symbol.toUpperCase()) || isNonCryptoBeta(c);
 const isWrapped = (c: Coin) => WRAPPED_SYMBOLS.has(c.symbol.toUpperCase()) || WRAPPED_NAME.test(c.name);
 
 // Load the tracked universe with each coin's full daily series + a quality badge.
