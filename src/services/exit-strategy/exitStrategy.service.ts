@@ -15,8 +15,8 @@ import { getProfile, type ExitProfile, type LadderStep, type RiskZone } from './
 // zone + a configurable exit ladder. Probability-style; never an instruction.
 //
 // Social Risk is pulled live from the Social Metrics module (btc_social_metrics)
-// via readLatestSocialRisk — preferred stored social_risk_score, computed
-// fallback. Weights are reweighted proportionally over whatever is available.
+// via readLatestSocialRisk — the live score the Social page shows, with the
+// stored social_risk_score as fallback. Weights are reweighted proportionally over whatever is available.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));

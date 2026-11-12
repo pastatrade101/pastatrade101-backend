@@ -9,9 +9,10 @@ import { computeSocialRisk, socialLabel } from './social-risk';
 // a same-day snapshot), so the current reading uses each column's most recent
 // NON-NULL value rather than strictly today's row — matching the Social page.
 //
-// Preferred: use the stored normalized social_risk_score.
-// Fallback:  recompute from whatever sources are active (computeSocialRisk
-//            already reweights proportionally over the available sources).
+// Preferred: recompute from each source's latest reading — the same
+//            calculation the Social page shows, so every page agrees
+//            (computeSocialRisk reweights over the available sources).
+// Fallback:  the stored social_risk_score from the last sync.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type SocialStatus = 'active' | 'partial' | 'unavailable';
@@ -118,9 +119,8 @@ export const readLatestSocialRisk = async (): Promise<SocialLatest> => {
     youtube_attention: detail.youtube_attention
   });
 
-  // Preferred: stored normalized score; fall back to the freshly computed value.
-  const storedScore = lastVal(rows, 'social_risk_score');
-  const score = storedScore ?? computed.score;
+  // Preferred: the live score (same as the Social page); fall back to the last stored one.
+  const score = computed.score ?? lastVal(rows, 'social_risk_score');
 
   const active: string[] = [];
   if (detail.fear_greed != null) active.push('Fear & Greed');

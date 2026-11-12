@@ -35,13 +35,24 @@ const ago = (iso: string | null | undefined): string => {
 };
 const isStale = (iso: string | null | undefined, hours = 24) => !iso || Date.now() - Date.parse(iso) > hours * 3600_000;
 
+// BTC risk as the Risk Dashboard shows it: the mean of the last 7 daily scores
+// (its gauge, badge and chart all use this smoothed value), so the Overview and
+// the dashboard never disagree on the number or the zone.
+const RISK_SMOOTH_DAYS = 7;
+const smoothedRisk = (rows: { summary_risk: number | null }[]): number | null => {
+  const vals = rows.map((r) => (r.summary_risk == null ? NaN : Number(r.summary_risk))).filter(Number.isFinite);
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+};
+
 // ── Signal builders ──
 const btcRiskSignal = (r: number | null): Signal => {
   if (r == null) return { key: 'btc_risk', name: 'BTC Risk', label: 'Unavailable', value: null, meaning: 'Run a risk sync to populate BTC risk.', tone: 'na', link: '/app/risk' };
   const v = `${Math.round(r * 100)}/100`;
-  if (r < 0.35) return { key: 'btc_risk', name: 'BTC Risk', label: 'Good DCA zone', value: v, meaning: 'BTC is not overheated on the current risk model.', tone: 'good', link: '/app/risk' };
-  if (r < 0.55) return { key: 'btc_risk', name: 'BTC Risk', label: 'Neutral', value: v, meaning: 'BTC risk is moderate — neither cheap nor stretched.', tone: 'neutral', link: '/app/risk' };
-  if (r < 0.75) return { key: 'btc_risk', name: 'BTC Risk', label: 'Caution', value: v, meaning: 'BTC risk is rising — be more selective.', tone: 'warn', link: '/app/risk' };
+  // The Risk Dashboard's zones (0.2 / 0.4 / 0.6 / 0.8), so both pages always name the same zone.
+  if (r < 0.2) return { key: 'btc_risk', name: 'BTC Risk', label: 'Aggressive DCA zone', value: v, meaning: 'BTC risk is very low on the current risk model.', tone: 'good', link: '/app/risk' };
+  if (r < 0.4) return { key: 'btc_risk', name: 'BTC Risk', label: 'Good DCA zone', value: v, meaning: 'BTC is not overheated on the current risk model.', tone: 'good', link: '/app/risk' };
+  if (r < 0.6) return { key: 'btc_risk', name: 'BTC Risk', label: 'Neutral', value: v, meaning: 'BTC risk is moderate — neither cheap nor stretched.', tone: 'neutral', link: '/app/risk' };
+  if (r < 0.8) return { key: 'btc_risk', name: 'BTC Risk', label: 'Caution', value: v, meaning: 'BTC risk is rising — be more selective.', tone: 'warn', link: '/app/risk' };
   return { key: 'btc_risk', name: 'BTC Risk', label: 'Distribution risk', value: v, meaning: 'BTC risk is high on this model.', tone: 'danger', link: '/app/risk' };
 };
 
@@ -120,9 +131,9 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
   const universe: Universe = opts.universe ?? 'clean';
   const isPaid = opts.isPaid ?? true;
 
-  const [{ data: globals }, { data: riskRow }, { data: exitRows }, social, { data: logregRow }, { data: ecos }, { data: coins }, { data: report }, { data: jobs }, { data: derivRow }, { data: macroRow }] = await Promise.all([
+  const [{ data: globals }, { data: riskRows }, { data: exitRows }, social, { data: logregRow }, { data: ecos }, { data: coins }, { data: report }, { data: jobs }, { data: derivRow }, { data: macroRow }] = await Promise.all([
     supabase.from('global_market_snapshots').select('*').order('captured_at', { ascending: false }).limit(2),
-    supabase.from('risk_summary_daily').select('snapshot_date, summary_risk').order('snapshot_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('risk_summary_daily').select('snapshot_date, summary_risk').order('snapshot_date', { ascending: false }).limit(RISK_SMOOTH_DAYS),
     supabase.from('exit_strategy_daily').select('date, exit_risk_score, exit_risk_percent, strategy_label, confidence').order('date', { ascending: false }).limit(2),
     readLatestSocialRisk(),
     supabase.from('asset_log_regression_bands').select('date, zone_label, risk_score, distance_from_fit_percent').eq('asset_symbol', 'BTC').order('date', { ascending: false }).limit(1).maybeSingle(),
@@ -177,7 +188,8 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
   const top_losers = [...liquid].sort((a, b) => a.price_change_pct_24h - b.price_change_pct_24h).slice(0, 6).map(moverRow);
 
   // ── Signals ──
-  const btcRisk = riskRow?.summary_risk == null ? null : Number(riskRow.summary_risk);
+  const btcRisk = smoothedRisk((riskRows ?? []) as { summary_risk: number | null }[]);
+  const latestRiskDate = ((riskRows ?? [])[0] as { snapshot_date?: string } | undefined)?.snapshot_date ?? null;
   const signals = {
     btc_risk: btcRiskSignal(btcRisk),
     altcoin_breadth: breadthSignal(breadthPct),
@@ -193,13 +205,13 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
   const dom = Number(global.btc_dominance ?? 0);
   let posture: string;
   let postureInterp: string;
-  if (btcRisk != null && btcRisk >= 0.7) {
+  if (btcRisk != null && btcRisk >= 0.6) {
     posture = 'Caution / distribution risk';
     postureInterp = 'BTC risk is high on the model — aggressive new buying is less attractive and risk management matters more.';
-  } else if (btcRisk != null && btcRisk < 0.45 && (breadthPct ?? 0) >= 55) {
+  } else if (btcRisk != null && btcRisk < 0.4 && (breadthPct ?? 0) >= 55) {
     posture = 'Broad risk-on building';
     postureInterp = 'BTC remains accumulation-friendly and altcoin strength is broadening across the market.';
-  } else if (btcRisk != null && btcRisk < 0.45) {
+  } else if (btcRisk != null && btcRisk < 0.4) {
     posture = 'Accumulation-friendly, but selective';
     postureInterp = 'BTC conditions favour disciplined DCA, but altcoin strength is not broad enough to call full altcoin season.';
   } else if (dom >= 55 && (breadthPct ?? 100) < 45) {
@@ -222,7 +234,7 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
 
   // ── Biggest warning today ──
   let warning: string;
-  if (btcRisk != null && btcRisk >= 0.7) warning = 'BTC risk is elevated — distribution risk is rising. Manage exposure carefully.';
+  if (btcRisk != null && btcRisk >= 0.6) warning = 'BTC risk is elevated — distribution risk is rising. Manage exposure carefully.';
   else if (social.score != null && social.score >= 0.7) warning = 'Social attention is heating up — watch for crowd euphoria.';
   else if ((breadthPct ?? 0) < 45) warning = 'Altcoin strength is still selective — do not assume full altcoin season until breadth improves.';
   else if (dom >= 55) warning = 'BTC dominance remains high — altcoin moves may be short-lived without a dominance rollover.';
@@ -254,7 +266,7 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
     label: global.market_condition ?? 'Neutral',
     summary: global.summary ?? '',
     confidence: condConfidence,
-    reason: `BTC risk is ${signals.btc_risk.label.toLowerCase()}, social attention is ${social.score == null ? 'unavailable' : social.score < 0.5 ? 'quiet' : 'rising'}, and altcoin breadth is ${breadthPct == null ? 'unavailable' : `${breadthPct}%`}.`,
+    reason: `BTC risk is ${signals.btc_risk.label === 'Unavailable' ? 'unavailable' : `in the ${signals.btc_risk.label.replace(/ zone$/, '').replace(/ risk$/, '')} zone (${signals.btc_risk.value})`}, social attention is ${social.score == null ? 'unavailable' : social.score < 0.5 ? 'quiet' : 'rising'}, and altcoin breadth is ${breadthPct == null ? 'unavailable' : `${breadthPct}%`}.`,
     what_would_change: 'If BTC risk rises and altcoin breadth expands broadly, the regime may shift toward selective risk-on.'
   };
 
@@ -267,7 +279,7 @@ export const buildOverview = async (opts: OverviewOptions = {}) => {
   const marketSynced = latestFor(/coingecko|global|market|price/i) ?? global.captured_at;
   const data_freshness = {
     market: { at: marketSynced, label: ago(marketSynced), stale: isStale(marketSynced, 6) },
-    risk: { at: riskRow?.snapshot_date ?? latestFor(/risk/i), label: ago(riskRow?.snapshot_date ?? latestFor(/risk/i)), stale: isStale(riskRow?.snapshot_date ?? null, 48) },
+    risk: { at: latestRiskDate ?? latestFor(/risk/i), label: ago(latestRiskDate ?? latestFor(/risk/i)), stale: isStale(latestRiskDate, 48) },
     onchain: { at: latestFor(/onchain|supply/i), label: ago(latestFor(/onchain|supply/i)), stale: isStale(latestFor(/onchain|supply/i), 48) },
     social: { at: social.as_of, label: social.as_of ? ago(`${social.as_of}T00:00:00Z`) : 'unavailable', stale: isStale(social.as_of ? `${social.as_of}T00:00:00Z` : null, 72), status: social.status },
     reports: { at: report?.published_at ?? null, label: ago(report?.published_at), stale: false }

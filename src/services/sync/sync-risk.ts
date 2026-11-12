@@ -23,6 +23,9 @@ type Category = 'price' | 'social' | 'onchain';
 // Keeps the table rich for the slider without storing sub-dollar 2010 noise.
 const STORE_FROM = '2012-01-01';
 
+/** How many days a metric's last reading keeps counting after its feed misses a day. */
+export const RISK_CARRY_DAYS = 7;
+
 const CATEGORY: Record<string, Category> = {
   log_regression: 'price',
   mayer_multiple: 'price',
@@ -151,7 +154,7 @@ export const syncRisk = async (): Promise<number> => {
   // composite lurched on the feed, not the market. (The 2026-09-17 dip to 0.177
   // was exactly this.) Stored metric rows stay untouched: only the aggregation
   // sees carried values, so the UI never displays a reading that never arrived.
-  const CARRY_DAYS = 7;
+  const CARRY_DAYS = RISK_CARRY_DAYS;
   const carriedRisk: Record<string, Nullable[]> = Object.fromEntries(
     Object.keys(CATEGORY).map((key) => [key, carryForward(risk[key] ?? [], CARRY_DAYS)])
   );

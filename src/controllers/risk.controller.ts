@@ -3,6 +3,7 @@ import { readSeries } from '../services/series/store';
 import { asyncHandler } from '../utils/async-handler';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { getQueryString } from '../utils/query';
+import { RISK_CARRY_DAYS } from '../services/sync/sync-risk';
 
 // Resolve the effective snapshot date: the most recent date with data that is
 // on or before the requested date (so the slider can land anywhere).
@@ -51,19 +52,31 @@ export const getMetrics = asyncHandler(async (req, res) => {
     .order('sort_order', { ascending: true });
   if (error) throw new AppError('Unable to load risk metrics.', 500, [error]);
 
-  const valuesByKey = new Map<string, { raw_value: number | null; risk: number | null }>();
+  // Each metric's latest reading on or before `date`, going back as far as the
+  // score itself carries a missed reading (RISK_CARRY_DAYS). Feeds land on
+  // different days — on-chain can lag several — and the score keeps counting
+  // a reading for that long, so the table shows exactly the values behind the
+  // score, each with the date it was actually read (`as_of`).
+  const valuesByKey = new Map<string, { raw_value: number | null; risk: number; as_of: string }>();
   if (date) {
+    const from = new Date(Date.parse(`${date}T00:00:00Z`) - RISK_CARRY_DAYS * 86_400_000).toISOString().slice(0, 10);
     const { data: rows } = await supabase
       .from('risk_metric_daily')
-      .select('metric_key, raw_value, risk')
-      .eq('snapshot_date', date);
-    (rows ?? []).forEach((r) => valuesByKey.set(r.metric_key, { raw_value: r.raw_value, risk: r.risk }));
+      .select('metric_key, raw_value, risk, snapshot_date')
+      .gte('snapshot_date', from)
+      .lte('snapshot_date', date)
+      .not('risk', 'is', null)
+      .order('snapshot_date', { ascending: false });
+    (rows ?? []).forEach((r) => {
+      if (!valuesByKey.has(r.metric_key)) valuesByKey.set(r.metric_key, { raw_value: r.raw_value, risk: r.risk, as_of: r.snapshot_date });
+    });
   }
 
   const merged = (defs ?? []).map((d) => ({
     ...d,
     raw_value: valuesByKey.get(d.key)?.raw_value ?? null,
-    risk: valuesByKey.get(d.key)?.risk ?? null
+    risk: valuesByKey.get(d.key)?.risk ?? null,
+    as_of: valuesByKey.get(d.key)?.as_of ?? null
   }));
 
   // Group into the three table columns the UI renders.
