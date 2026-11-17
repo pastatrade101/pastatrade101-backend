@@ -7,6 +7,7 @@ import { decide } from '../services/rotation-backtest/engine';
 import type { OrderResult } from '../services/rotation-bot/binance';
 import { applyBuy, applySell, newLedger, reconcile } from '../services/rotation-bot/ledger';
 import { buyAmounts, pickUniverse, planFollow, planReview, reviewStatus, STYLES } from '../services/rotation-bot/planner';
+import { buildSnapshot } from '../services/rotation-bot/snapshot';
 import { floorToStep, fromUnits, isTradablePair, rulesFor, sizeBuy, sizeSell, toUnits, type BinanceSymbol } from '../services/rotation-bot/sizing';
 
 let failures = 0;
@@ -185,6 +186,31 @@ console.log('ledger booking');
   const w = reconcile(l3, new Map([['TRX', '400']]));
   check('reconcile: cuts a position to what the account holds', l3.positions.tron?.qty === '400' && w.length === 2);
   check('reconcile: drops a position the account no longer has', !l3.positions.ethereum);
+}
+
+console.log('admin snapshot');
+{
+  const l = newLedger('live', 'balanced', 100, new Date('2026-11-19T06:00:00Z'));
+  l.follow = 'rotation-balanced';
+  l.cashUsdt = 0.5;
+  l.positions.tron = { coin: 'tron', asset: 'TRX', symbol: 'TRXUSDT', qty: '100', entryDate: '2026-11-19', costUsdt: 33 };
+  const prices = new Map([['TRXUSDT', 0.3], ['SOLUSDT', 70]]);
+  const balances = new Map([
+    ['USDT', { asset: 'USDT', free: '67.5', locked: '0' }],
+    ['TRX', { asset: 'TRX', free: '100', locked: '0' }],
+    ['SOL', { asset: 'SOL', free: '0.001', locked: '0' }],
+    ['LDUSDT', { asset: 'LDUSDT', free: '0.1', locked: '0' }],
+    ['XRP', { asset: 'XRP', free: '0', locked: '0' }]
+  ]);
+  const snap = buildSnapshot({ ledger: l, started: true, prices, balances, status: 'test', index: { id: 'rotation-balanced', date: '2026-11-18' }, nextReview: '2026-11-24', now: new Date('2026-11-19T06:05:00Z') });
+  check('snapshot: sleeve value is cash plus coins at Binance prices', snap.equity_usdt === 30.5, String(snap.equity_usdt));
+  check('snapshot: return is on the budget', snap.return_pct === -69.5, String(snap.return_pct));
+  check('snapshot: a position carries its value and return', snap.positions[0].value_usdt === 30 && snap.positions[0].return_pct === -9.09, JSON.stringify(snap.positions[0]));
+  check('snapshot: Spot wallet skips empty coins, biggest first, unpriced last', snap.spot?.assets.map((x) => x.asset).join(',') === 'USDT,TRX,SOL,LDUSDT', snap.spot?.assets.map((x) => x.asset).join(','));
+  check('snapshot: Spot total counts priced coins only', snap.spot?.total_usdt === 97.57, String(snap.spot?.total_usdt));
+  check('snapshot: date and follow are kept', snap.taken_at.startsWith('2026-11-19') && snap.follow === 'rotation-balanced' && snap.started_on === '2026-11-19');
+  const waiting = buildSnapshot({ ledger: newLedger('live', 'balanced', 100), started: false, prices, balances: null, status: 'waiting', index: null, nextReview: null });
+  check('snapshot: before the first buy there is no value line yet', waiting.equity_usdt === null && waiting.return_pct === null && waiting.spot === null);
 }
 
 console.log(failures ? `\n${failures} test(s) FAILED` : '\nAll rotation bot tests passed.');

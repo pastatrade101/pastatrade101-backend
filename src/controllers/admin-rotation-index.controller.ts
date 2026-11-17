@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import { readBotSnapshots } from '../services/rotation-bot/snapshot';
 import { getRotationIndexView, isIndexId, stepRotationIndex, type IndexId } from '../services/rotation-index/rotationIndex.service';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { asyncHandler } from '../utils/async-handler';
@@ -18,4 +19,10 @@ export const adminRotationIndex = asyncHandler(async (req: Request, res: Respons
 export const adminStepRotationIndex = asyncHandler(async (req: Request, res: Response) => {
   const r = await stepRotationIndex(indexId(req));
   return sendSuccess(res, r.added ? `Added ${r.added} day(s).` : 'Already up to date.', r);
+});
+
+// GET /api/v1/admin/rotation-index/bot — the newest snapshot the rotation bot saved
+// for each mode (live, testnet): its sleeve, the Spot wallet and recent trades.
+export const adminRotationBot = asyncHandler(async (_req: Request, res: Response) => {
+  return sendSuccess(res, 'Rotation bot snapshot fetched.', await readBotSnapshots());
 });

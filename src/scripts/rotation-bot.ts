@@ -22,11 +22,15 @@
  * The bot only trades its own "sleeve" (the budget and the coins it bought, kept in
  * backend/.bot/rotation-<mode>.json), never the rest of the account. Spot market
  * orders only — no withdrawals, transfers, margin or futures exist in its client.
+ *
+ * After every real run (not a dry run) it saves a snapshot — the sleeve, the Spot
+ * wallet and recent trades — to rotation_bot_snapshots for the admin Rotation Index
+ * page. Only the snapshot leaves this machine, never the key.
  */
 import '../config/env';
 import { runRotation } from '../services/rotation-backtest/engine';
 import { loadPriceMatrix } from '../services/rotation-backtest/rotationData.service';
-import { BinanceError, createBinance, type BinanceMode, type OrderResult } from '../services/rotation-bot/binance';
+import { BinanceError, createBinance, type Balance, type BinanceMode, type OrderResult } from '../services/rotation-bot/binance';
 import {
   acquireLock,
   applyBuy,
@@ -41,6 +45,7 @@ import {
 } from '../services/rotation-bot/ledger';
 import { buyAmounts, pickUniverse, planFollow, planReview, rankUniverse, reviewStatus, STYLES, type StyleKey } from '../services/rotation-bot/planner';
 import { INDEXES, isIndexId, readIndexLineUp, type IndexId } from '../services/rotation-index/rotationIndex.service';
+import { buildSnapshot, saveBotSnapshot } from '../services/rotation-bot/snapshot';
 import { fromUnits, isTradablePair, rulesFor, sizeBuy, sizeSell, toUnits, type SymbolRules } from '../services/rotation-bot/sizing';
 
 class Stop extends Error {}
@@ -255,6 +260,7 @@ const main = async () => {
 
     // ── Account: safety checks, recover an interrupted order, reconcile ──
     let usdtFree = Infinity;
+    let spotBalances: Map<string, Balance> | null = null;
     const notes: string[] = [];
     if (bn.hasKeys) {
       await bn.syncTime();
@@ -277,6 +283,7 @@ const main = async () => {
         if (!a.dryRun) L.pending = null;
       }
       const bal = await bn.balances();
+      spotBalances = bal;
       const free = new Map([...bal].map(([asset, b]) => [asset, b.free]));
       notes.push(...reconcile(L, free));
       usdtFree = Number(free.get('USDT') ?? 0);
@@ -307,6 +314,28 @@ const main = async () => {
     printSleeve(fresh ? 'Sleeve (new)' : 'Sleeve now');
     say();
 
+    /** Save what the sleeve and the Spot wallet hold, for the admin page. Never fails the run. */
+    const saveSnapshot = async (status: string, { started = true, refresh = false } = {}) => {
+      if (a.dryRun || !bn.hasKeys) return;
+      try {
+        if (refresh) spotBalances = await bn.balances();
+        await saveBotSnapshot(
+          buildSnapshot({
+            ledger: L,
+            started,
+            prices: livePrices,
+            balances: spotBalances,
+            status,
+            index: lineUp ? { id: lineUp.id, date: lineUp.date } : null,
+            nextReview: lineUp ? lineUp.nextReview : reviewStatus(L.lastReview, today, style.rebalanceDays).nextReview
+          })
+        );
+        say('Snapshot saved for the admin Rotation Index page.');
+      } catch (e) {
+        warn(`Snapshot not saved for the admin page: ${e instanceof Error ? e.message : e}`);
+      }
+    };
+
     let plan: { keep: string[]; drops: { coin: string; reason: string }[]; adds: string[] };
     let buyReason = 'entered the top slots';
     if (lineUp) {
@@ -314,6 +343,7 @@ const main = async () => {
       if ((fresh || converting) && lineUp.pending) {
         say(`The index has a review waiting to fill (decided ${lineUp.pending.decided}). Start following after that fill is saved, so the sleeve doesn't trade into coins the index is about to sell.`);
         say('Nothing was bought and nothing was saved.');
+        await saveSnapshot(`Waiting for the index to fill its review decided ${lineUp.pending.decided} before ${fresh ? 'buying' : 'switching'}.`, { started: !fresh });
         return;
       }
       const raw = planFollow(Object.keys(L.positions), targetIds);
@@ -325,6 +355,7 @@ const main = async () => {
         say(`The sleeve matches the index — nothing to do today.${lineUp.pending ? ' The bot copies the pending review once its fill is saved.' : ''}`);
         if (!a.dryRun && (notes.length || converting)) saveLedger(dir, L);
         if (converting && !a.dryRun) say('This ledger now follows the index.');
+        await saveSnapshot(`Matches the index — nothing to trade.${lineUp.pending ? ` Its review decided ${lineUp.pending.decided} fills at the next close.` : ''}`, { started: !fresh });
         return;
       }
       buyReason = 'the index holds it';
@@ -334,6 +365,7 @@ const main = async () => {
       if (!status.due && !a.force) {
         say(`Next review ${status.nextReview} (in ${status.daysLeft} day${status.daysLeft === 1 ? '' : 's'}). Nothing to do today — the rule does nothing between reviews.`);
         if (!a.dryRun && notes.length) saveLedger(dir, L);
+        await saveSnapshot(`Next review ${status.nextReview} — nothing to trade until then.`);
         return;
       }
       // ── Review ──
@@ -380,6 +412,8 @@ const main = async () => {
     };
 
     say();
+    const sold: string[] = [];
+    const bought: string[] = [];
     for (const d of plan.drops) {
       const pos = L.positions[d.coin];
       const rules = rulesBySymbol.get(pos.symbol);
@@ -396,7 +430,10 @@ const main = async () => {
         continue;
       }
       const o = await place('SELL', d.coin, rules, size.value, d.reason);
-      if (o) say(`  SOLD   ${o.executedQty} ${pos.asset} for ${usd(Number(o.cummulativeQuoteQty))} USDT (${d.reason})`);
+      if (o) {
+        sold.push(pos.asset);
+        say(`  SOLD   ${o.executedQty} ${pos.asset} for ${usd(Number(o.cummulativeQuoteQty))} USDT (${d.reason})`);
+      }
     }
 
     if (plan.drops.length) usdtFree = Number((await bn.balances()).get('USDT')?.free ?? 0);
@@ -411,7 +448,10 @@ const main = async () => {
         continue;
       }
       const o = await place('BUY', b.coin, c.rules, size.value, buyReason);
-      if (o) say(`  BOUGHT ${L.positions[b.coin]?.qty ?? o.executedQty} ${c.asset} for ${usd(Number(o.cummulativeQuoteQty))} USDT`);
+      if (o) {
+        bought.push(c.asset);
+        say(`  BOUGHT ${L.positions[b.coin]?.qty ?? o.executedQty} ${c.asset} for ${usd(Number(o.cummulativeQuoteQty))} USDT`);
+      }
     }
 
     L.lastReview = today;
@@ -421,6 +461,8 @@ const main = async () => {
     if (L.feesBnb > 0) say(`  fees paid in BNB so far: ${L.feesBnb} BNB (outside the sleeve)`);
     if (lineUp) say(`Next index review ${lineUp.nextReview ?? '—'}. The bot copies it once the index saves the fill.`);
     else say(`Next review ${reviewStatus(L.lastReview, today, style.rebalanceDays).nextReview}.`);
+    const did = [sold.length ? `sold ${sold.join(', ')}` : '', bought.length ? `bought ${bought.join(', ')}` : ''].filter(Boolean).join(', ') || 'no order filled';
+    await saveSnapshot(`${lineUp ? 'Copied the index' : 'Reviewed'}: ${did}.`, { refresh: true });
   } finally {
     release();
   }
