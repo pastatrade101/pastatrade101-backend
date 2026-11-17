@@ -1,5 +1,5 @@
 import { supabase } from '../../config/supabase';
-import { isNonCryptoBeta } from '../../utils/asset-class';
+import { isGoldToken, isNonCryptoBeta } from '../../utils/asset-class';
 import { cached } from '../../utils/cache';
 import { readSeries } from '../series/store';
 import { prehistoryKey, withPrehistory } from './prehistory';
@@ -104,7 +104,7 @@ export const loadCandidateCoins = async (): Promise<CandidateCoin[]> => {
     .order('market_cap_rank', { ascending: true });
   if (error) throw new Error(`Failed to read coins: ${error.message}`);
   return (data ?? []).filter(
-    (c) => c.coingecko_id && !EXCLUDED_IDS.has(c.coingecko_id) && !STABLE_SYMBOLS.has(String(c.symbol ?? '').toUpperCase()) && !isNonCryptoBeta(c)
+    (c) => c.coingecko_id && !EXCLUDED_IDS.has(c.coingecko_id) && !STABLE_SYMBOLS.has(String(c.symbol ?? '').toUpperCase()) && (!isNonCryptoBeta(c) || isGoldToken(c))
   ) as CandidateCoin[];
 };
 

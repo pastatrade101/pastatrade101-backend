@@ -16,6 +16,8 @@ const NON_BETA_SYMBOLS = new Set([
 
 const NON_BETA_NAME = /\busd\b|\bdollar\b|\beuro?\b|stablecoin|\bgold\b|treasury|treasuries|t-?bill|money market|\bfund\b|heloc|\bclo\b/i;
 
+const GOLD_SYMBOLS = new Set(['XAUT', 'PAXG']);
+
 export interface AssetLike {
   symbol?: string | null;
   name?: string | null;
@@ -31,3 +33,11 @@ export const isNonCryptoBeta = (c: AssetLike): boolean => {
   const d30 = c.price_change_pct_30d;
   return p != null && d30 != null && p > 0.97 && p < 1.03 && Math.abs(d30) < 1.5;
 };
+
+/**
+ * Gold tokens (XAUT, PAXG). They stay out of breadth and alt-season stats, but the
+ * Rotation Lab, Rotation Index and rotation bot may hold them: Binance trades
+ * them against USDT and rotating into gold when crypto is weak is part of the rule.
+ */
+export const isGoldToken = (c: AssetLike): boolean =>
+  GOLD_SYMBOLS.has((c.symbol ?? '').toUpperCase()) || (!!c.name && /\bgold\b/i.test(c.name));

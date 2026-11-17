@@ -116,7 +116,12 @@ const main = async () => {
     if (!ledger) {
       const budget = a.budget ?? (a.dryRun ? 1000 : NaN);
       if (!(budget > 0)) fail('First run: choose the budget the bot may use, e.g. --budget 1000 (USDT).');
-      if (live && budget > maxBudget) fail(`Budget ${usd(budget)} USDT is above BOT_MAX_BUDGET_USDT (${usd(maxBudget)}).`);
+      if (live && budget > maxBudget) {
+        const msg = `Budget ${usd(budget)} USDT is above BOT_MAX_BUDGET_USDT (${usd(maxBudget)}).`;
+        // A dry run only shows the plan, so it can preview a budget before the cap is set.
+        if (a.dryRun) warn(`${msg} A real run would stop here.`);
+        else fail(msg);
+      }
       ledger = newLedger(a.mode, style.key, budget);
     } else if (a.budget) {
       warn(`--budget only applies to the first run; this ledger's budget is ${usd(ledger.budgetUsdt)} USDT.`);
