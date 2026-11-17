@@ -23,6 +23,9 @@
  * backend/.bot/rotation-<mode>.json), never the rest of the account. Spot market
  * orders only — no withdrawals, transfers, margin or futures exist in its client.
  *
+ *   npm run bot:rotation -- --mode live --snapshot    balance check: read the account and save a snapshot for
+ *                                                     the admin page. Never places an order, so no --yes needed.
+ *
  * After every real run (not a dry run) it saves a snapshot — the sleeve, the Spot
  * wallet and recent trades — to rotation_bot_snapshots for the admin Rotation Index
  * page. Only the snapshot leaves this machine, never the key.
@@ -60,13 +63,15 @@ interface Args {
   follow?: IndexId;
   budget?: number;
   dryRun: boolean;
+  /** Read the account and save a snapshot only — never trades. */
+  snapshot: boolean;
   force: boolean;
   yes: boolean;
   reset: boolean;
 }
 
 const parseArgs = (argv: string[]): Args => {
-  const a: Args = { mode: 'testnet', dryRun: false, force: false, yes: false, reset: false };
+  const a: Args = { mode: 'testnet', dryRun: false, snapshot: false, force: false, yes: false, reset: false };
   for (let i = 0; i < argv.length; i += 1) {
     const [flag, inline] = argv[i].split('=');
     const value = () => inline ?? argv[++i] ?? fail(`${flag} needs a value.`);
@@ -86,6 +91,7 @@ const parseArgs = (argv: string[]): Args => {
       const v = inline ?? 'rotation-balanced';
       a.follow = isIndexId(v) ? v : fail(`--follow: unknown index "${v}". Known: ${Object.keys(INDEXES).join(', ')}.`);
     } else if (flag === '--dry-run') a.dryRun = true;
+    else if (flag === '--snapshot') a.snapshot = true;
     else if (flag === '--force') a.force = true;
     else if (flag === '--yes') a.yes = true;
     else if (flag === '--reset') a.reset = true;
@@ -109,7 +115,8 @@ const main = async () => {
     : { apiKey: process.env.BINANCE_TESTNET_API_KEY, apiSecret: process.env.BINANCE_TESTNET_API_SECRET };
   const maxBudget = Number(process.env.BOT_MAX_BUDGET_USDT || 0);
 
-  if (live && !a.dryRun) {
+  if (a.snapshot && (a.dryRun || a.reset || a.force)) fail('--snapshot only reads the account; it does not combine with --dry-run, --reset or --force.');
+  if (live && !a.dryRun && !a.snapshot) {
     if (process.env.BOT_LIVE_ENABLED !== 'true') fail('Live trading is off. It needs BOT_LIVE_ENABLED=true in backend/.env.');
     if (!(maxBudget > 0)) fail('Live trading needs BOT_MAX_BUDGET_USDT in backend/.env (the most the bot may manage).');
     if (!a.yes) fail('A live run places real orders with real money. Add --yes to confirm.');
@@ -117,7 +124,7 @@ const main = async () => {
   if (a.reset && live) fail('--reset is for testnet only. A live ledger is the record of real money; edit it by hand if you must.');
 
   const dir = defaultStateDir();
-  const release = a.dryRun ? () => {} : acquireLock(dir, a.mode);
+  const release = a.dryRun || a.snapshot ? () => {} : acquireLock(dir, a.mode);
   try {
     if (a.reset) {
       if (!a.dryRun) deleteLedger(dir, 'testnet');
@@ -140,12 +147,12 @@ const main = async () => {
     /** An existing sleeve switching from its own rule to copying the index. */
     const converting = !!following && !!ledger && !ledger.follow;
     if (!ledger) {
-      const budget = a.budget ?? (a.dryRun ? 1000 : NaN);
-      if (!(budget > 0)) fail('First run: choose the budget the bot may use, e.g. --budget 1000 (USDT).');
+      const budget = a.budget ?? (a.dryRun ? 1000 : a.snapshot ? maxBudget : NaN);
+      if (!(budget > 0) && !a.snapshot) fail('First run: choose the budget the bot may use, e.g. --budget 1000 (USDT).');
       if (live && budget > maxBudget) {
         const msg = `Budget ${usd(budget)} USDT is above BOT_MAX_BUDGET_USDT (${usd(maxBudget)}).`;
         // A dry run only shows the plan, so it can preview a budget before the cap is set.
-        if (a.dryRun) warn(`${msg} A real run would stop here.`);
+        if (a.dryRun || a.snapshot) warn(`${msg} A real run would stop here.`);
         else fail(msg);
       }
       ledger = newLedger(a.mode, style.key, budget);
@@ -187,7 +194,7 @@ const main = async () => {
     const age = dayDiff(asOf, today);
     if (age > 2) {
       const msg = `Saved prices end ${asOf} (${age} days old). The daily price sync has not run — refusing to trade on stale data.`;
-      if (a.dryRun) warn(msg);
+      if (a.dryRun || a.snapshot) warn(msg);
       else fail(msg);
     }
     if (following && !lineUp) fail(`${INDEXES[following].label} has not started yet — there is nothing to follow.`);
@@ -195,7 +202,7 @@ const main = async () => {
       const idxAge = dayDiff(lineUp.date, today);
       if (idxAge > 3) {
         const msg = `The index was last saved for ${lineUp.date} (${idxAge} days ago). The server's daily price sync may have stopped — refusing to copy an old line-up.`;
-        if (a.dryRun) warn(msg);
+        if (a.dryRun || a.snapshot) warn(msg);
         else fail(msg);
       }
     }
@@ -212,7 +219,7 @@ const main = async () => {
     const whyNot = (id: string) => skipped.find((x) => x.asset === symbolOf.get(id))?.reason ?? "not in the Lab's coin list";
 
     say(
-      `Pastatrade rotation bot · ${live ? 'LIVE — REAL MONEY' : 'TESTNET — demo funds'} · ${lineUp ? `follows ${lineUp.label}` : style.label}${a.dryRun ? ' · DRY RUN' : ''}`
+      `Pastatrade rotation bot · ${live ? 'LIVE — REAL MONEY' : 'TESTNET — demo funds'} · ${lineUp ? `follows ${lineUp.label}` : style.label}${a.dryRun ? ' · DRY RUN' : a.snapshot ? ' · BALANCE CHECK (no orders)' : ''}`
     );
     if (lineUp) {
       say(`Index saved to ${lineUp.date}${lineUp.savedAt ? ` (at ${lineUp.savedAt.slice(0, 16).replace('T', ' ')} UTC)` : ''}, at ${lineUp.nav.toFixed(2)} points. Prices: Binance ${a.mode}.`);
@@ -267,7 +274,7 @@ const main = async () => {
       if (live) {
         const r = await bn.apiRestrictions();
         if (r.enableWithdrawals) fail('This API key can WITHDRAW funds. Turn withdrawals off for it on Binance — the bot refuses to run with it.');
-        if (!r.enableSpotAndMarginTrading && !a.dryRun) fail('This API key does not have spot trading enabled.');
+        if (!r.enableSpotAndMarginTrading && !a.dryRun && !a.snapshot) fail('This API key does not have spot trading enabled.');
         if (!r.ipRestrict) warn('This API key is not restricted to an IP address. Restrict it to the machine that runs the bot.');
       }
       if (L.pending) {
@@ -289,7 +296,7 @@ const main = async () => {
       usdtFree = Number(free.get('USDT') ?? 0);
       if (fresh && usdtFree < L.budgetUsdt) {
         const msg = `The account has ${usd(usdtFree)} USDT free — less than the ${usd(L.budgetUsdt)} USDT budget.`;
-        if (a.dryRun) warn(msg);
+        if (a.dryRun || a.snapshot) warn(msg);
         else fail(msg);
       }
     }
@@ -336,16 +343,27 @@ const main = async () => {
       }
     };
 
+    if (a.snapshot) {
+      await saveSnapshot(fresh ? 'Balance check — the sleeve has not bought anything yet.' : 'Balance check — no orders placed.', { started: !fresh });
+      return;
+    }
+
     let plan: { keep: string[]; drops: { coin: string; reason: string }[]; adds: string[] };
     let buyReason = 'entered the top slots';
     if (lineUp) {
       // ── Follow the index: hold what it holds ──
-      if ((fresh || converting) && lineUp.pending) {
-        say(`The index has a review waiting to fill (decided ${lineUp.pending.decided}). Start following after that fill is saved, so the sleeve doesn't trade into coins the index is about to sell.`);
-        say('Nothing was bought and nothing was saved.');
-        await saveSnapshot(`Waiting for the index to fill its review decided ${lineUp.pending.decided} before ${fresh ? 'buying' : 'switching'}.`, { started: !fresh });
+      // While the index has a review waiting to fill, copy nothing: its holdings are
+      // about to change (and right after the index starts they are empty), so trading
+      // now would buy coins it is about to sell or sell coins it is about to buy.
+      // A review stuck unfilled for days (a coin with no price) no longer blocks.
+      if (lineUp.pending && dayDiff(lineUp.pending.decided, lineUp.date) <= 2) {
+        say(`The index has a review waiting to fill (decided ${lineUp.pending.decided}). The bot copies it once that fill is saved — nothing to do today.`);
+        if (!a.dryRun && !fresh && notes.length) saveLedger(dir, L);
+        if (fresh || converting) say('Nothing was bought and nothing was saved.');
+        await saveSnapshot(`Waiting for the index to fill its review decided ${lineUp.pending.decided}.`, { started: !fresh });
         return;
       }
+      if (lineUp.pending) warn(`The index's review from ${lineUp.pending.decided} still hasn't fully filled — copying what it holds now.`);
       const raw = planFollow(Object.keys(L.positions), targetIds);
       for (const c of raw.adds.filter((id) => !byId.has(id))) {
         warn(`${assetOf(c)}: the index holds it, but it can't be bought on Binance ${a.mode} (${whyNot(c)}) — its slot stays in cash.`);
