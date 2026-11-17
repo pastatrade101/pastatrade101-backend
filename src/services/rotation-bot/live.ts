@@ -43,9 +43,9 @@ const cache = new Map<BotMode, { at: number; value: Promise<LiveWallet> }>();
 const lastSaved = new Map<BotMode, number>();
 const keyChecks = new Map<BotMode, { at: number; value: ApiRestrictions }>();
 
-const restrictions = async (bn: BinanceClient, mode: BotMode): Promise<ApiRestrictions> => {
+const restrictions = async (bn: BinanceClient, mode: BotMode, fresh: boolean): Promise<ApiRestrictions> => {
   const hit = keyChecks.get(mode);
-  if (hit && Date.now() - hit.at < KEY_CHECK_MS) return hit.value;
+  if (!fresh && hit && Date.now() - hit.at < KEY_CHECK_MS) return hit.value;
   const value = await bn.apiRestrictions();
   keyChecks.set(mode, { at: Date.now(), value });
   return value;
@@ -63,7 +63,7 @@ const explain = (e: unknown): string => {
   return e instanceof Error ? e.message : String(e);
 };
 
-const read = async (mode: BotMode): Promise<LiveWallet> => {
+const read = async (mode: BotMode, fresh: boolean): Promise<LiveWallet> => {
   const why = whyCannotTrade(mode);
   const store = await openLedgerStore(mode, { fileFallback: false });
   const inDb = store.kind === 'database';
@@ -91,7 +91,7 @@ const read = async (mode: BotMode): Promise<LiveWallet> => {
   const bn = createBinance({ mode, ...botKeys(mode), timeoutMs: 8_000 });
   try {
     await bn.syncTime();
-    const [prices, balances, r] = await Promise.all([bn.prices(), bn.balances(), mode === 'live' ? restrictions(bn, mode) : Promise.resolve(null)]);
+    const [prices, balances, r] = await Promise.all([bn.prices(), bn.balances(), mode === 'live' ? restrictions(bn, mode, fresh) : Promise.resolve(null)]);
     if (r) out.key = { withdrawals: r.enableWithdrawals, ip_restricted: r.ipRestrict, spot_trading: r.enableSpotAndMarginTrading };
     // Before the first run there is no ledger: show the sleeve the first run would start.
     const L = ledger ?? { ...newLedger(mode, 'balanced', mode === 'live' ? maxBudgetUsdt() : 1000), follow: BOT_FOLLOWS };
@@ -114,11 +114,11 @@ const read = async (mode: BotMode): Promise<LiveWallet> => {
   return out;
 };
 
-/** The account right now. Calls within a few seconds share one read. */
+/** The account right now. Calls within a few seconds share one read; `fresh` (the page's refresh button) also re-checks the key's permissions. */
 export const readLiveWallet = (mode: BotMode, { fresh = false } = {}): Promise<LiveWallet> => {
   const hit = cache.get(mode);
   if (!fresh && hit && Date.now() - hit.at < FRESH_MS) return hit.value;
-  const value = read(mode);
+  const value = read(mode, fresh);
   cache.set(mode, { at: Date.now(), value });
   value.catch(() => cache.delete(mode));
   return value;
