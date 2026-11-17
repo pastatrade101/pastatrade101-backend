@@ -6,8 +6,9 @@ import { fromUnits, sizeSell, toUnits, type SymbolRules } from './sizing';
 
 // The bot's own books. It manages a "sleeve": a fixed budget of USDT inside the
 // account, and only ever trades what this ledger says it owns — never the rest of
-// the account. One JSON file per mode in backend/.bot/ (gitignored), written
-// atomically after every order so a crash cannot lose a fill.
+// the account. Saved after every order so a crash cannot lose a fill — in the
+// rotation_bot_ledgers table (see store.ts), or one JSON file per mode in
+// backend/.bot/ (gitignored) until that table exists.
 
 export interface LedgerPosition {
   coin: string;
@@ -58,6 +59,8 @@ export interface Ledger {
   /** Fees paid in BNB (when the account pays fees in BNB), not taken from the sleeve. */
   feesBnb: number;
   history: HistoryEntry[];
+  /** The latest real run that kept these books, in one sentence. */
+  lastRun?: { at: string; summary: string; by: 'cli' | 'admin' } | null;
 }
 
 export const defaultStateDir = () => process.env.BOT_STATE_DIR || path.resolve(__dirname, '../../../.bot');

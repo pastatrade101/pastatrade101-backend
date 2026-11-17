@@ -2,10 +2,10 @@ import { supabase } from '../../config/supabase';
 import type { Balance } from './binance';
 import type { HistoryEntry, Ledger } from './ledger';
 
-// What the bot's sleeve holds, saved after every real run so the admin Rotation
-// Index page can show it. The bot runs on the owner's machine with the trading
-// key; the server only ever sees this snapshot. One row per mode per UTC day —
-// the day's last run wins — so the rows also draw the sleeve's value over time.
+// What the bot's sleeve holds, saved after every real run (and now and then while
+// the admin page reads the account live) so the admin Rotation Index page has it
+// even when Binance can't be reached. One row per mode per UTC day — the day's
+// last save wins — so the rows also draw the sleeve's value over time.
 
 const TABLE = 'rotation_bot_snapshots';
 export const SNAPSHOT_TABLE_MISSING = `The ${TABLE} table does not exist yet — create it with backend/database/rotation-bot-snapshots.sql.`;
@@ -53,6 +53,8 @@ export interface BotSnapshot {
   fees_bnb: number;
   /** One plain sentence on what this run did. */
   status: string;
+  /** The latest real run that kept the books (it may be older than this snapshot). */
+  last_run?: { at: string; summary: string; by: 'cli' | 'admin' } | null;
   /** The index day the sleeve was compared with. */
   index: { id: string; date: string } | null;
   next_review: string | null;
@@ -130,6 +132,7 @@ export const buildSnapshot = (input: {
     dust: L.dust,
     fees_bnb: L.feesBnb,
     status: input.status,
+    last_run: L.lastRun ?? null,
     index: input.index,
     next_review: input.nextReview,
     spot,
