@@ -5,7 +5,7 @@ import { createBinance } from '../rotation-bot/binance';
 import { addDays, pickUniverse, STYLES } from '../rotation-bot/planner';
 import { isTradablePair, rulesFor, type SymbolRules } from '../rotation-bot/sizing';
 import { readSeries, readSeriesFull } from '../series/store';
-import { newIndexState, stepDay, type IndexConfig, type IndexState, type ReviewRecord, type Trade } from './indexEngine';
+import { newIndexState, stepDay, type IndexConfig, type IndexState, type PendingReview, type ReviewRecord, type Trade } from './indexEngine';
 
 // Runs the Rotation Index forward over the SAVED daily prices and stores one row per
 // day in rotation_index_days (see indexEngine.ts for the rules). Stepped after every
@@ -197,6 +197,50 @@ export const stepRotationIndex = async (
     latest: { date: z.date, nav: z.nav, btc: z.btc, top10: z.top10 },
     warnings,
     ...(dryRun ? { rows } : {})
+  };
+};
+
+/** What the index holds on its newest saved day — the rotation bot's follow mode copies it. */
+export interface IndexLineUp {
+  id: IndexId;
+  label: string;
+  /** Newest saved (final) day. */
+  date: string;
+  savedAt: string | null;
+  nav: number;
+  /** Filled holdings, biggest weight first. */
+  holdings: { coin: string; entryDate: string; weightPct: number }[];
+  /** A review decided but not filled yet (it fills at the next close). */
+  pending: PendingReview | null;
+  lastReview: string | null;
+  nextReview: string | null;
+}
+
+export const readIndexLineUp = async (id: IndexId): Promise<IndexLineUp | null> => {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('date, nav, state, created_at')
+    .eq('index_id', id)
+    .order('date', { ascending: false })
+    .limit(1);
+  if (error) throw new Error(isMissingTable(error) ? MISSING_TABLE : `Failed to read ${TABLE}: ${error.message}`);
+  const row = data?.[0] as { date: string; nav: number; state: SavedState; created_at?: string } | undefined;
+  if (!row) return null;
+  const nav = Number(row.nav);
+  const st = row.state;
+  const holdings = Object.entries(st.holdings)
+    .map(([coin, h]) => ({ coin, entryDate: h.entryDate, weightPct: r2(((h.units * (st.lastPrice[coin] ?? 0)) / nav) * 100) }))
+    .sort((a, b) => b.weightPct - a.weightPct || a.coin.localeCompare(b.coin));
+  return {
+    id,
+    label: INDEXES[id].label,
+    date: row.date,
+    savedAt: row.created_at ?? null,
+    nav,
+    holdings,
+    pending: st.pending,
+    lastReview: st.lastReview,
+    nextReview: st.lastReview ? addDays(st.lastReview, INDEXES[id].config.style.rebalanceDays) : null
   };
 };
 

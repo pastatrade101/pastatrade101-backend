@@ -9,6 +9,12 @@
  *   npm run bot:rotation -- --reset                    testnet: forget the testnet ledger
  *   options: --style steady|balanced|bold (first run; default balanced)
  *
+ *   npm run bot:rotation -- --follow --budget 1000     testnet: copy the Rotation Index (Balanced) instead
+ *   npm run bot:rotation -- --follow                   on an existing ledger: switch it to copying the index
+ * Following, the sleeve holds exactly the coins the index holds: it sells what the
+ * index sold and buys what it bought, once the index has saved the fill. The ledger
+ * remembers it, so later runs follow without the flag.
+ *
  * Live trading is OFF unless backend/.env sets BOT_LIVE_ENABLED=true and
  * BOT_MAX_BUDGET_USDT, has BINANCE_API_KEY / BINANCE_API_SECRET for a key with
  * withdrawals disabled, and the command adds `--mode live --yes`.
@@ -33,7 +39,8 @@ import {
   saveLedger,
   type Ledger
 } from '../services/rotation-bot/ledger';
-import { buyAmounts, pickUniverse, planReview, rankUniverse, reviewStatus, STYLES, type StyleKey } from '../services/rotation-bot/planner';
+import { buyAmounts, pickUniverse, planFollow, planReview, rankUniverse, reviewStatus, STYLES, type StyleKey } from '../services/rotation-bot/planner';
+import { INDEXES, isIndexId, readIndexLineUp, type IndexId } from '../services/rotation-index/rotationIndex.service';
 import { fromUnits, isTradablePair, rulesFor, sizeBuy, sizeSell, toUnits, type SymbolRules } from '../services/rotation-bot/sizing';
 
 class Stop extends Error {}
@@ -44,6 +51,8 @@ const fail = (msg: string): never => {
 interface Args {
   mode: BinanceMode;
   style?: StyleKey;
+  /** Copy this Rotation Index instead of running the rule. */
+  follow?: IndexId;
   budget?: number;
   dryRun: boolean;
   force: boolean;
@@ -67,6 +76,10 @@ const parseArgs = (argv: string[]): Args => {
     } else if (flag === '--budget') {
       a.budget = Number(value());
       if (!(a.budget > 0)) fail('--budget must be a positive USDT amount.');
+    } else if (flag === '--follow') {
+      // Bare --follow is the Balanced index; --follow=<id> names another one.
+      const v = inline ?? 'rotation-balanced';
+      a.follow = isIndexId(v) ? v : fail(`--follow: unknown index "${v}". Known: ${Object.keys(INDEXES).join(', ')}.`);
     } else if (flag === '--dry-run') a.dryRun = true;
     else if (flag === '--force') a.force = true;
     else if (flag === '--yes') a.yes = true;
@@ -108,11 +121,19 @@ const main = async () => {
     }
 
     let ledger: Ledger | null = a.reset ? null : loadLedger(dir, a.mode);
-    if (ledger && a.style && a.style !== ledger.style) {
+    const followId = a.follow ?? ledger?.follow;
+    const following: IndexId | undefined =
+      followId === undefined ? undefined : isIndexId(followId) ? followId : fail(`This ledger follows "${followId}", which is not a known index.`);
+    if (ledger?.follow && a.follow && a.follow !== ledger.follow) fail(`This ${a.mode} ledger follows ${ledger.follow}, not ${a.follow}.`);
+    if (following && a.style) fail('--style does not apply when following the index: the index sets the rule.');
+    if (following && a.force) fail('--force does not apply when following the index: the index decides when to trade.');
+    if (!following && ledger && a.style && a.style !== ledger.style) {
       fail(`This ${a.mode} ledger follows ${STYLES[ledger.style].label}. Switching style mid-way mixes two rules — use --reset on testnet to start over.`);
     }
-    const style = STYLES[a.style ?? ledger?.style ?? 'balanced'];
+    const style = following ? INDEXES[following].config.style : STYLES[a.style ?? ledger?.style ?? 'balanced'];
     const fresh = !ledger;
+    /** An existing sleeve switching from its own rule to copying the index. */
+    const converting = !!following && !!ledger && !ledger.follow;
     if (!ledger) {
       const budget = a.budget ?? (a.dryRun ? 1000 : NaN);
       if (!(budget > 0)) fail('First run: choose the budget the bot may use, e.g. --budget 1000 (USDT).');
@@ -127,6 +148,10 @@ const main = async () => {
       warn(`--budget only applies to the first run; this ledger's budget is ${usd(ledger.budgetUsdt)} USDT.`);
     }
     const L = ledger;
+    if (following) {
+      L.follow = following;
+      L.style = style.key;
+    }
 
     const bn = createBinance({ mode: a.mode, ...keys });
     if (!a.dryRun && !bn.hasKeys) {
@@ -136,7 +161,12 @@ const main = async () => {
     }
 
     // ── Market data: saved daily closes (the rule's input) + Binance pairs and prices ──
-    const [m, symbols, livePrices] = await Promise.all([loadPriceMatrix(), bn.exchangeInfo(), bn.prices()]);
+    const [m, symbols, livePrices, lineUp] = await Promise.all([
+      loadPriceMatrix(),
+      bn.exchangeInfo(),
+      bn.prices(),
+      following ? readIndexLineUp(following) : Promise.resolve(null)
+    ]);
     const pairs = new Map<string, SymbolRules>();
     const rulesBySymbol = new Map<string, SymbolRules>();
     for (const s of symbols) {
@@ -155,43 +185,73 @@ const main = async () => {
       if (a.dryRun) warn(msg);
       else fail(msg);
     }
-    const { picked, skipped } = pickUniverse(m.coins, m.prices, lastIdx, pairs, livePrices, style.universeSize);
-    if (picked.length < style.topN) fail(`Only ${picked.length} coins qualify on Binance — fewer than ${style.topN} slots.`);
-    const ranking = rankUniverse(picked, m.prices, btc, style, lastIdx);
+    if (following && !lineUp) fail(`${INDEXES[following].label} has not started yet — there is nothing to follow.`);
+    if (lineUp) {
+      const idxAge = dayDiff(lineUp.date, today);
+      if (idxAge > 3) {
+        const msg = `The index was last saved for ${lineUp.date} (${idxAge} days ago). The server's daily price sync may have stopped — refusing to copy an old line-up.`;
+        if (a.dryRun) warn(msg);
+        else fail(msg);
+      }
+    }
+    // Following: only the coins the index holds need a Binance pair. Otherwise: the style's universe.
+    const targetIds = lineUp ? lineUp.holdings.map((h) => h.coin) : [];
+    const { picked, skipped } = lineUp
+      ? pickUniverse(m.coins.filter((c) => targetIds.includes(c.id)), m.prices, lastIdx, pairs, livePrices, Number.POSITIVE_INFINITY)
+      : pickUniverse(m.coins, m.prices, lastIdx, pairs, livePrices, style.universeSize);
+    if (!lineUp && picked.length < style.topN) fail(`Only ${picked.length} coins qualify on Binance — fewer than ${style.topN} slots.`);
+    const ranking = lineUp ? [] : rankUniverse(picked, m.prices, btc, style, lastIdx);
     const byId = new Map(picked.map((c) => [c.id, c]));
-    const assetOf = (id: string) => byId.get(id)?.asset ?? L.positions[id]?.asset ?? id;
+    const symbolOf = new Map(m.coins.map((c) => [c.id, c.symbol]));
+    const assetOf = (id: string) => byId.get(id)?.asset ?? L.positions[id]?.asset ?? symbolOf.get(id) ?? id;
+    const whyNot = (id: string) => skipped.find((x) => x.asset === symbolOf.get(id))?.reason ?? "not in the Lab's coin list";
 
-    say(`Pastatrade rotation bot · ${live ? 'LIVE — REAL MONEY' : 'TESTNET — demo funds'} · ${style.label}${a.dryRun ? ' · DRY RUN' : ''}`);
-    say(`Rule input: saved daily closes to ${asOf}. Prices: Binance ${a.mode}.`);
-    say();
-    say(`Universe — top ${style.universeSize} by market cap that Binance trades against USDT:`);
-    say(`  ${picked.map((c) => c.asset).join(' ')}`);
-    if (skipped.length) say(`  skipped: ${skipped.map((s) => `${s.asset} (${s.reason})`).join(', ')}`);
-    const unit = style.signal === 'momentum' ? '%' : 'x';
-    say(`Ranking today (${style.signal === 'momentum' ? `${style.lookbackDays}-day change` : 'risk-adjusted momentum'}${style.filter === 'none' ? '' : `, filter: ${style.filter}`}):`);
     say(
-      `  ${
-        ranking
-          .slice(0, style.worstRankHeld + 2)
-          .map((r) => `#${r.rank} ${assetOf(r.coin)} ${unit === '%' ? pct(r.score * 100) : `${r.score.toFixed(2)}x`}`)
-          .join(' · ') || 'no coin qualifies — the rule sits in cash'
-      }`
+      `Pastatrade rotation bot · ${live ? 'LIVE — REAL MONEY' : 'TESTNET — demo funds'} · ${lineUp ? `follows ${lineUp.label}` : style.label}${a.dryRun ? ' · DRY RUN' : ''}`
     );
+    if (lineUp) {
+      say(`Index saved to ${lineUp.date}${lineUp.savedAt ? ` (at ${lineUp.savedAt.slice(0, 16).replace('T', ' ')} UTC)` : ''}, at ${lineUp.nav.toFixed(2)} points. Prices: Binance ${a.mode}.`);
+      say(`  holds: ${lineUp.holdings.map((h) => `${assetOf(h.coin)} ${h.weightPct.toFixed(1)}% since ${h.entryDate}`).join(' · ') || 'nothing (all cash)'}`);
+      if (lineUp.pending) {
+        const p = lineUp.pending;
+        say(
+          `  review decided ${p.decided}: sell ${p.sells.map((x) => `${assetOf(x.coin)} (${x.reason})`).join(', ') || '—'} · buy ${p.adds.map(assetOf).join(', ') || '—'}. It fills at the next close; the bot copies it once that fill is saved.`
+        );
+      }
+      say(`  last review ${lineUp.lastReview ?? '—'} · next review ${lineUp.nextReview ?? '—'}`);
+      say();
+    } else {
+      say(`Rule input: saved daily closes to ${asOf}. Prices: Binance ${a.mode}.`);
+      say();
+      say(`Universe — top ${style.universeSize} by market cap that Binance trades against USDT:`);
+      say(`  ${picked.map((c) => c.asset).join(' ')}`);
+      if (skipped.length) say(`  skipped: ${skipped.map((s) => `${s.asset} (${s.reason})`).join(', ')}`);
+      const unit = style.signal === 'momentum' ? '%' : 'x';
+      say(`Ranking today (${style.signal === 'momentum' ? `${style.lookbackDays}-day change` : 'risk-adjusted momentum'}${style.filter === 'none' ? '' : `, filter: ${style.filter}`}):`);
+      say(
+        `  ${
+          ranking
+            .slice(0, style.worstRankHeld + 2)
+            .map((r) => `#${r.rank} ${assetOf(r.coin)} ${unit === '%' ? pct(r.score * 100) : `${r.score.toFixed(2)}x`}`)
+            .join(' · ') || 'no coin qualifies — the rule sits in cash'
+        }`
+      );
 
-    // What this exact rule did on these coins (past results, not a forecast).
-    const sub: Record<string, (number | null)[]> = {};
-    for (const c of picked) sub[c.id] = m.prices[c.id];
-    const bt = runRotation({
-      dates: m.dates,
-      prices: sub,
-      btc,
-      startIndex: style.lookbackDays,
-      params: { ...style, feePct: 0.1, initialCash: 1000 }
-    });
-    say(
-      `Backtest of this rule on these coins, ${bt.dates[0]} → ${asOf}: ${pct(bt.metrics.strategy.totalReturnPct)} (BTC ${pct(bt.metrics.btc.totalReturnPct)}), worst drop ${bt.metrics.strategy.maxDrawdownPct.toFixed(0)}%. Past results, not a forecast.`
-    );
-    say();
+      // What this exact rule did on these coins (past results, not a forecast).
+      const sub: Record<string, (number | null)[]> = {};
+      for (const c of picked) sub[c.id] = m.prices[c.id];
+      const bt = runRotation({
+        dates: m.dates,
+        prices: sub,
+        btc,
+        startIndex: style.lookbackDays,
+        params: { ...style, feePct: 0.1, initialCash: 1000 }
+      });
+      say(
+        `Backtest of this rule on these coins, ${bt.dates[0]} → ${asOf}: ${pct(bt.metrics.strategy.totalReturnPct)} (BTC ${pct(bt.metrics.btc.totalReturnPct)}), worst drop ${bt.metrics.strategy.maxDrawdownPct.toFixed(0)}%. Past results, not a forecast.`
+      );
+      say();
+    }
 
     // ── Account: safety checks, recover an interrupted order, reconcile ──
     let usdtFree = Infinity;
@@ -247,16 +307,39 @@ const main = async () => {
     printSleeve(fresh ? 'Sleeve (new)' : 'Sleeve now');
     say();
 
-    const status = reviewStatus(L.lastReview, today, style.rebalanceDays);
-    if (!status.due && !a.force) {
-      say(`Next review ${status.nextReview} (in ${status.daysLeft} day${status.daysLeft === 1 ? '' : 's'}). Nothing to do today — the rule does nothing between reviews.`);
-      if (!a.dryRun && notes.length) saveLedger(dir, L);
-      return;
+    let plan: { keep: string[]; drops: { coin: string; reason: string }[]; adds: string[] };
+    let buyReason = 'entered the top slots';
+    if (lineUp) {
+      // ── Follow the index: hold what it holds ──
+      if ((fresh || converting) && lineUp.pending) {
+        say(`The index has a review waiting to fill (decided ${lineUp.pending.decided}). Start following after that fill is saved, so the sleeve doesn't trade into coins the index is about to sell.`);
+        say('Nothing was bought and nothing was saved.');
+        return;
+      }
+      const raw = planFollow(Object.keys(L.positions), targetIds);
+      for (const c of raw.adds.filter((id) => !byId.has(id))) {
+        warn(`${assetOf(c)}: the index holds it, but it can't be bought on Binance ${a.mode} (${whyNot(c)}) — its slot stays in cash.`);
+      }
+      plan = { ...raw, adds: raw.adds.filter((id) => byId.has(id)) };
+      if (!plan.drops.length && !plan.adds.length) {
+        say(`The sleeve matches the index — nothing to do today.${lineUp.pending ? ' The bot copies the pending review once its fill is saved.' : ''}`);
+        if (!a.dryRun && (notes.length || converting)) saveLedger(dir, L);
+        if (converting && !a.dryRun) say('This ledger now follows the index.');
+        return;
+      }
+      buyReason = 'the index holds it';
+      say(`Copy the index ${today}${converting ? ' (switching this sleeve to follow the index)' : ''}:`);
+    } else {
+      const status = reviewStatus(L.lastReview, today, style.rebalanceDays);
+      if (!status.due && !a.force) {
+        say(`Next review ${status.nextReview} (in ${status.daysLeft} day${status.daysLeft === 1 ? '' : 's'}). Nothing to do today — the rule does nothing between reviews.`);
+        if (!a.dryRun && notes.length) saveLedger(dir, L);
+        return;
+      }
+      // ── Review ──
+      plan = planReview(Object.keys(L.positions), ranking, new Set(picked.map((c) => c.id)), style);
+      say(`Review ${today}${status.due ? '' : ' (forced)'}:`);
     }
-
-    // ── Review ──
-    const plan = planReview(Object.keys(L.positions), ranking, new Set(picked.map((c) => c.id)), style);
-    say(`Review ${today}${status.due ? '' : ' (forced)'}:`);
     say(`  keep: ${plan.keep.map(assetOf).join(', ') || '—'}`);
     say(`  sell: ${plan.drops.map((d) => `${assetOf(d.coin)} (${d.reason})`).join(', ') || '—'}`);
     say(`  buy:  ${plan.adds.map(assetOf).join(', ') || '—'}`);
@@ -327,7 +410,7 @@ const main = async () => {
         warn(`${c.asset}: not bought (${size.reason}) — the slot stays in cash.`);
         continue;
       }
-      const o = await place('BUY', b.coin, c.rules, size.value, 'entered the top slots');
+      const o = await place('BUY', b.coin, c.rules, size.value, buyReason);
       if (o) say(`  BOUGHT ${L.positions[b.coin]?.qty ?? o.executedQty} ${c.asset} for ${usd(Number(o.cummulativeQuoteQty))} USDT`);
     }
 
@@ -336,7 +419,8 @@ const main = async () => {
     say();
     printSleeve('Sleeve after the review');
     if (L.feesBnb > 0) say(`  fees paid in BNB so far: ${L.feesBnb} BNB (outside the sleeve)`);
-    say(`Next review ${reviewStatus(L.lastReview, today, style.rebalanceDays).nextReview}.`);
+    if (lineUp) say(`Next index review ${lineUp.nextReview ?? '—'}. The bot copies it once the index saves the fill.`);
+    else say(`Next review ${reviewStatus(L.lastReview, today, style.rebalanceDays).nextReview}.`);
   } finally {
     release();
   }

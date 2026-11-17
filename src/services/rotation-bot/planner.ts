@@ -130,6 +130,24 @@ export const planReview = (held: string[], ranking: RankRow[], universeIds: Set<
 };
 
 /**
+ * Follow the Rotation Index: hold exactly the coins it holds. Sell what the index
+ * no longer holds, buy what it holds that the sleeve doesn't. Based on the index's
+ * filled holdings, so running it twice changes nothing.
+ */
+export const planFollow = (held: string[], target: string[]) => {
+  const want = new Set(target);
+  const have = new Set(held);
+  return {
+    keep: [...held].filter((c) => want.has(c)).sort(),
+    drops: [...held]
+      .filter((c) => !want.has(c))
+      .sort()
+      .map((coin) => ({ coin, reason: 'the index sold it' })),
+    adds: target.filter((c) => !have.has(c))
+  };
+};
+
+/**
  * USDT to spend per new coin, like the backtest: each slot gets 1/topN of the
  * sleeve's equity at the time of buying, capped by the cash left. Binance takes the
  * trading fee from the coins received, so the USDT spent is exactly the amount.

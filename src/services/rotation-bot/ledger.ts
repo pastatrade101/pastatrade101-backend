@@ -44,6 +44,8 @@ export interface Ledger {
   version: 1;
   mode: 'testnet' | 'live';
   style: StyleKey;
+  /** Set when the sleeve copies a Rotation Index (its id) instead of running the rule itself. */
+  follow?: string;
   createdAt: string;
   budgetUsdt: number;
   cashUsdt: number;

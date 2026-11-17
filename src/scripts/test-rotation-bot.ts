@@ -6,7 +6,7 @@
 import { decide } from '../services/rotation-backtest/engine';
 import type { OrderResult } from '../services/rotation-bot/binance';
 import { applyBuy, applySell, newLedger, reconcile } from '../services/rotation-bot/ledger';
-import { buyAmounts, pickUniverse, planReview, reviewStatus, STYLES } from '../services/rotation-bot/planner';
+import { buyAmounts, pickUniverse, planFollow, planReview, reviewStatus, STYLES } from '../services/rotation-bot/planner';
 import { floorToStep, fromUnits, isTradablePair, rulesFor, sizeBuy, sizeSell, toUnits, type BinanceSymbol } from '../services/rotation-bot/sizing';
 
 let failures = 0;
@@ -114,6 +114,22 @@ console.log('review plan');
   check('same answer as the Rotation Lab engine', same.adds.join() === p.adds.join() && same.keep.join() === p.keep.join());
   const gone = planReview(['zzz'], ranking, universe, style);
   check('a holding that left the universe is sold with that reason', gone.drops[0]?.reason === 'left the universe');
+}
+
+console.log('follow the index');
+{
+  const p = planFollow(['tron', 'tether-gold', 'zcash'], ['tron', 'zcash', 'hyperliquid']);
+  check('follow: keeps what the index still holds', JSON.stringify(p.keep) === '["tron","zcash"]', JSON.stringify(p.keep));
+  check('follow: sells what the index sold', p.drops.length === 1 && p.drops[0].coin === 'tether-gold' && p.drops[0].reason === 'the index sold it', JSON.stringify(p.drops));
+  check('follow: buys what the index bought', JSON.stringify(p.adds) === '["hyperliquid"]', JSON.stringify(p.adds));
+  const start = planFollow([], ['tron', 'zcash', 'tether-gold']);
+  check('follow: a new sleeve buys the whole line-up in the index order', JSON.stringify(start.adds) === '["tron","zcash","tether-gold"]' && !start.drops.length);
+  const same = planFollow(['zcash', 'tron'], ['tron', 'zcash']);
+  check('follow: a sleeve that matches the index does nothing', !same.drops.length && !same.adds.length);
+  const cash = planFollow(['tron'], []);
+  check('follow: an all-cash index sells everything', cash.drops.length === 1 && !cash.adds.length);
+  const buys = buyAmounts(start.adds, 100, 100, 3, 3);
+  check('follow: a new 100 USDT sleeve puts a third in each coin', buys.length === 3 && buys.every((b) => Math.abs(b.amount - 100 / 3) < 1e-9), JSON.stringify(buys));
 }
 
 console.log('buy sizing');
