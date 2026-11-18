@@ -13,7 +13,9 @@
     "bot:rotation": "tsx src/scripts/rotation-bot.ts",
     "test:bot": "tsx src/scripts/test-rotation-bot.ts",
     "index:rotation": "tsx src/scripts/rotation-index.ts",
-    "test:index": "tsx src/scripts/test-rotation-index.ts"
+    "test:index": "tsx src/scripts/test-rotation-index.ts",
+    "backtest:moon": "tsx src/scripts/moon-backtest.ts",
+    "test:moon": "tsx src/scripts/test-moon-backtest.ts"
   },
   "optionalDependencies": {
     "google-trends-api": "^4.9.2"
