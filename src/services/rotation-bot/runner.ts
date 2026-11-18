@@ -5,7 +5,7 @@ import { BinanceError, createBinance, type Balance, type OrderResult } from './b
 import { botKeys, liveEnabled, maxBudgetUsdt } from './config';
 import { BotStop } from './errors';
 import { applyBuy, applySell, newLedger, reconcile, type Ledger } from './ledger';
-import { buyAmounts, pickUniverse, planFollow, planReview, rankUniverse, reviewStatus, STYLES, type StyleKey } from './planner';
+import { buyAmounts, pickUniverse, planFollow, planReview, rankUniverse, reviewStatus, STYLES, topUpBuys, type StyleKey } from './planner';
 import { fromUnits, isTradablePair, rulesFor, sizeBuy, sizeSell, toUnits, type SymbolRules } from './sizing';
 import { buildSnapshot, saveBotSnapshot, type BotSnapshot } from './snapshot';
 import { openLedgerStore, type BotMode } from './store';
@@ -36,6 +36,8 @@ export interface BotRunOptions {
   caller: 'cli' | 'admin';
   /** The coins the owner saw in the preview and confirmed: a real run whose orders differ stops instead. */
   expect?: { sell: string[]; buy: string[] };
+  /** Add this much USDT from the Spot wallet to a started sleeve and buy the index's coins with it. */
+  topUp?: number;
 }
 
 export interface BotPlan {
@@ -79,6 +81,8 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
     if (!(maxBudget > 0)) fail('Live trading needs BOT_MAX_BUDGET_USDT in backend/.env (the most the bot may manage).');
     if (!a.yes) fail(cli ? 'A live run places real orders with real money. Add --yes to confirm.' : 'A live run places real orders with real money — confirm it first.');
   }
+  if (a.topUp !== undefined && !(a.topUp > 0)) fail('The amount to add must be a positive USDT amount.');
+  if (a.topUp && (snapshotOnly || a.reset || a.force || a.style)) fail('Adding to the sleeve does not combine with --snapshot, --reset, --force or --style.');
   if (a.reset && live) fail('--reset is for testnet only. A live ledger is the record of real money; edit it by hand if you must.');
 
   const store = await openLedgerStore(a.mode, { fileFallback: cli });
@@ -311,9 +315,111 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
       }
     };
 
+    const place = async (side: 'BUY' | 'SELL', coin: string, rules: SymbolRules, value: string, reason: string): Promise<OrderResult | null> => {
+      const clientOrderId = `ptrot_${Date.now().toString(36)}_${side[0]}_${rules.base}`.slice(0, 36);
+      // Booked before the order is sent, so a crash or timeout leaves a trail the next run follows up.
+      L.pending = { clientOrderId, symbol: rules.symbol, side, coin, asset: rules.base, reason, createdAt: new Date().toISOString() };
+      await store.save(L);
+      try {
+        const o = side === 'BUY' ? await bn.marketBuy(rules.symbol, value, clientOrderId) : await bn.marketSell(rules.symbol, value, clientOrderId);
+        if (side === 'BUY') applyBuy(L, coin, rules, o, today, reason);
+        else applySell(L, coin, rules, o, livePrices.get(rules.symbol) ?? 0, reason);
+        L.pending = null;
+        await store.save(L);
+        return o;
+      } catch (e) {
+        if (e instanceof BinanceError && e.rejected) {
+          L.pending = null;
+          await store.save(L);
+          warn(`${side} ${rules.symbol} rejected by Binance: ${e.message}`);
+          return null;
+        }
+        // No answer: the order may exist. `pending` stays so the next run looks it up.
+        throw e;
+      }
+    };
+
+    /** A real run copies only the orders the owner confirmed in the preview. */
+    const checkExpect = (sell: string[], buy: string[]) => {
+      if (!a.expect || dryRun) return;
+      const same = (x: string[], y: string[]) => x.length === y.length && [...x].sort().every((v, i) => v === [...y].sort()[i]);
+      if (!same(sell, a.expect.sell) || !same(buy, a.expect.buy)) {
+        fail(`The orders changed since the preview (now: sell ${sell.join(', ') || '—'}, buy ${buy.join(', ') || '—'}). Nothing was placed — check again and confirm the new orders.`);
+      }
+    };
+
     if (snapshotOnly) {
       const status = fresh ? 'Balance check — the sleeve has not bought anything yet.' : 'Balance check — no orders placed.';
       return done('balance-check', status, null, await saveSnapshot(status, { started: !fresh }));
+    }
+
+    if (a.topUp) {
+      // ── Add money to a sleeve that already copies the index ──
+      const add = a.topUp;
+      const idx = lineUp ?? fail('Adding to the sleeve works only when it copies the Rotation Index.');
+      if (fresh) fail('The sleeve has not started yet — set the first-run budget instead of adding to it.');
+      if (idx.pending && dayDiff(idx.pending.decided, idx.date) <= 2) {
+        fail(`The index has a review waiting to fill (decided ${idx.pending.decided}). Add to the sleeve after the bot has copied it.`);
+      }
+      const sync = planFollow(Object.keys(L.positions), targetIds.filter((id) => byId.has(id)));
+      if (sync.drops.length || sync.adds.length) fail('The sleeve does not match the index yet — press Run now first so it copies the index, then add to it.');
+      const outside = usdtFree - L.cashUsdt;
+      if (add > outside + 1e-6) {
+        const msg = `Only ${usd(Math.max(0, outside))} USDT in Spot is outside the sleeve — less than the ${usd(add)} USDT to add. Deposit to Spot first.`;
+        if (dryRun) warn(`${msg} A real run would stop here.`);
+        else fail(msg);
+      }
+      const before = L.budgetUsdt;
+      const after = Math.round((before + add) * 1e8) / 1e8;
+      if (live && after > maxBudget) {
+        const msg = `Adding ${usd(add)} USDT makes the sleeve ${usd(after)} USDT — above BOT_MAX_BUDGET_USDT (${usd(maxBudget)}). Raise it in backend/.env first.`;
+        if (dryRun) warn(`${msg} A real run would stop here.`);
+        else fail(msg);
+      }
+      L.budgetUsdt = after;
+      L.cashUsdt = Math.round((L.cashUsdt + add) * 1e8) / 1e8;
+      L.topUps = [...(L.topUps ?? []), { at: new Date().toISOString(), usdt: add }];
+      const weights = new Map(idx.holdings.map((h) => [h.coin, h.weightPct]));
+      const held = Object.keys(L.positions).map((coin) => ({ coin, value: valueOf(coin) }));
+      const equity = L.cashUsdt + held.reduce((x, h) => x + h.value, 0);
+      const buys = topUpBuys(held, weights, L.cashUsdt, equity);
+      say(`Add ${usd(add)} USDT to the sleeve (budget ${usd(before)} → ${usd(after)} USDT), spread over the index's coins by its weights:`);
+      for (const b of buys) say(`  ${dryRun ? 'would buy' : 'buy'} ${assetOf(b.coin)} for ~${usd(b.amount)} USDT (${(weights.get(b.coin) ?? 0).toFixed(1)}% in the index)`);
+      const tPlan: BotPlan = {
+        keep: held.map((h) => assetOf(h.coin)),
+        sell: [],
+        buy: buys.map((b) => ({ asset: assetOf(b.coin), usdt: Math.round(b.amount * 100) / 100 }))
+      };
+      checkExpect([], tPlan.buy.map((b) => b.asset));
+      if (dryRun) {
+        say();
+        say('DRY RUN — nothing was sent to Binance and nothing was saved.');
+        return done('preview', `Adding ${usd(add)} USDT would buy ${tPlan.buy.map((b) => b.asset).join(', ') || 'nothing'}.`, tPlan);
+      }
+
+      // The new budget and cash are booked first, so the money is the sleeve's even if an order fails.
+      await store.save(L);
+      say();
+      const topped: string[] = [];
+      for (const b of buys) {
+        const c = byId.get(b.coin)!;
+        const size = sizeBuy(c.rules, b.amount, c.price);
+        if (!size.ok) {
+          warn(`${c.asset}: not bought (${size.reason}) — that part stays as cash in the sleeve.`);
+          continue;
+        }
+        const o = await place('BUY', b.coin, c.rules, size.value, 'added to the sleeve');
+        if (o) {
+          topped.push(c.asset);
+          say(`  BOUGHT ${o.executedQty} ${c.asset} for ${usd(Number(o.cummulativeQuoteQty))} USDT`);
+        }
+      }
+      const summary = `Added ${usd(add)} USDT to the sleeve: bought ${topped.join(', ') || 'nothing'}.`;
+      stamp(summary);
+      await store.save(L);
+      say();
+      printSleeve('Sleeve after adding');
+      return done('traded', summary, tPlan, await saveSnapshot(summary, { refresh: true }));
     }
 
     let plan: { keep: string[]; drops: { coin: string; reason: string }[]; adds: string[] };
@@ -379,14 +485,7 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
       buy: plan.adds.map((id) => ({ asset: assetOf(id), usdt: amounts.has(id) ? Math.round(amounts.get(id)! * 100) / 100 : null }))
     });
 
-    if (a.expect && !dryRun) {
-      const same = (x: string[], y: string[]) => x.length === y.length && [...x].sort().every((v, i) => v === [...y].sort()[i]);
-      const sell = plan.drops.map((d) => assetOf(d.coin));
-      const buy = plan.adds.map(assetOf);
-      if (!same(sell, a.expect.sell) || !same(buy, a.expect.buy)) {
-        fail(`The orders changed since the preview (now: sell ${sell.join(', ') || '—'}, buy ${buy.join(', ') || '—'}). Nothing was placed — check again and confirm the new orders.`);
-      }
-    }
+    checkExpect(plan.drops.map((d) => assetOf(d.coin)), plan.adds.map(assetOf));
 
     if (dryRun) {
       const proceeds = plan.drops.reduce((s, d) => s + valueOf(d.coin) * 0.999, 0);
@@ -406,29 +505,6 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
       return done('preview', `A run now would ${summary || 'place no order'}.`, p);
     }
 
-    const place = async (side: 'BUY' | 'SELL', coin: string, rules: SymbolRules, value: string, reason: string): Promise<OrderResult | null> => {
-      const clientOrderId = `ptrot_${Date.now().toString(36)}_${side[0]}_${rules.base}`.slice(0, 36);
-      // Booked before the order is sent, so a crash or timeout leaves a trail the next run follows up.
-      L.pending = { clientOrderId, symbol: rules.symbol, side, coin, asset: rules.base, reason, createdAt: new Date().toISOString() };
-      await store.save(L);
-      try {
-        const o = side === 'BUY' ? await bn.marketBuy(rules.symbol, value, clientOrderId) : await bn.marketSell(rules.symbol, value, clientOrderId);
-        if (side === 'BUY') applyBuy(L, coin, rules, o, today, reason);
-        else applySell(L, coin, rules, o, livePrices.get(rules.symbol) ?? 0, reason);
-        L.pending = null;
-        await store.save(L);
-        return o;
-      } catch (e) {
-        if (e instanceof BinanceError && e.rejected) {
-          L.pending = null;
-          await store.save(L);
-          warn(`${side} ${rules.symbol} rejected by Binance: ${e.message}`);
-          return null;
-        }
-        // No answer: the order may exist. `pending` stays so the next run looks it up.
-        throw e;
-      }
-    };
 
     say();
     const sold: string[] = [];

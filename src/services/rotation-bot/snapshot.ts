@@ -45,6 +45,8 @@ export interface BotSnapshot {
   started: boolean;
   started_on: string | null;
   budget_usdt: number;
+  /** Money added after the first run; budget_usdt already includes it. */
+  top_ups?: { at: string; usdt: number }[];
   cash_usdt: number;
   equity_usdt: number | null;
   return_pct: number | null;
@@ -125,6 +127,7 @@ export const buildSnapshot = (input: {
     started: input.started,
     started_on: input.started ? L.createdAt.slice(0, 10) : null,
     budget_usdt: L.budgetUsdt,
+    top_ups: L.topUps ?? [],
     cash_usdt: r2(L.cashUsdt),
     equity_usdt: equity,
     return_pct: equity == null ? null : r2((equity / L.budgetUsdt - 1) * 100),

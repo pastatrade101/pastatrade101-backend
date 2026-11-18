@@ -164,3 +164,17 @@ export const buyAmounts = (adds: string[], cash: number, equity: number, topN: n
   }
   return out;
 };
+
+/**
+ * Adding money to a sleeve that already copies the index: spread its spare cash over
+ * the coins it holds so each moves toward the index's weight. Each coin's target is
+ * its index weight × the sleeve's value; the buy is the gap to what the sleeve holds,
+ * scaled down when the gaps add up to more than the cash.
+ */
+export const topUpBuys = (held: { coin: string; value: number }[], weightPct: Map<string, number>, cash: number, equity: number) => {
+  const gaps = held.map((h) => ({ coin: h.coin, gap: Math.max(0, (equity * (weightPct.get(h.coin) ?? 0)) / 100 - h.value) }));
+  const total = gaps.reduce((s, g) => s + g.gap, 0);
+  if (!(total > 0) || !(cash > 0)) return [];
+  const scale = Math.min(1, cash / total);
+  return gaps.filter((g) => g.gap > 0).map((g) => ({ coin: g.coin, amount: g.gap * scale }));
+};

@@ -24,6 +24,9 @@
  * exists), never the rest of the account. Spot market orders only — no withdrawals,
  * transfers, margin or futures exist in its client.
  *
+ *   npm run bot:rotation -- --top-up 100 --dry-run      add 100 USDT from Spot to a sleeve that copies the index
+ *                                                     and buy its coins at the index's weights (drop --dry-run to do it)
+ *
  *   npm run bot:rotation -- --mode live --snapshot    balance check: read the account and save a snapshot for
  *                                                     the admin page. Never places an order, so no --yes needed.
  *
@@ -60,6 +63,9 @@ const parseArgs = (argv: string[]): BotRunOptions => {
     } else if (flag === '--budget') {
       a.budget = Number(value());
       if (!(a.budget > 0)) fail('--budget must be a positive USDT amount.');
+    } else if (flag === '--top-up') {
+      a.topUp = Number(value());
+      if (!(a.topUp > 0)) fail('--top-up must be a positive USDT amount.');
     } else if (flag === '--follow') {
       // Bare --follow is the Balanced index; --follow=<id> names another one.
       const v = inline ?? 'rotation-balanced';

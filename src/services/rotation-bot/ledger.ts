@@ -59,6 +59,8 @@ export interface Ledger {
   /** Fees paid in BNB (when the account pays fees in BNB), not taken from the sleeve. */
   feesBnb: number;
   history: HistoryEntry[];
+  /** Money added to the sleeve after its first run (USDT), oldest first. */
+  topUps?: { at: string; usdt: number }[];
   /** The latest real run that kept these books, in one sentence. */
   lastRun?: { at: string; summary: string; by: 'cli' | 'admin' } | null;
 }

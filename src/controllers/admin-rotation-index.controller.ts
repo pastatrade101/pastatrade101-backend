@@ -37,12 +37,12 @@ const botMode = (req: Request): BotMode => {
   return m;
 };
 
-/** First-run budget from the request body (USDT), if any. */
-const budgetOf = (req: Request): number | undefined => {
-  const b = (req.body as { budget?: unknown } | undefined)?.budget;
+/** A USDT amount from the request body (the first-run budget or a top-up), if any. */
+const usdtOf = (req: Request, field: 'budget' | 'topUp'): number | undefined => {
+  const b = (req.body as Record<string, unknown> | undefined)?.[field];
   if (b == null || b === '') return undefined;
   const n = Number(b);
-  if (!(n > 0 && n <= 10_000_000)) throw new AppError('The budget must be a positive USDT amount.', 400);
+  if (!(n > 0 && n <= 10_000_000)) throw new AppError(`The ${field === 'budget' ? 'budget' : 'amount to add'} must be a positive USDT amount.`, 400);
   return n;
 };
 
@@ -57,7 +57,8 @@ export const adminBotLive = asyncHandler(async (req: Request, res: Response) => 
 /** Run the bot for the admin page and hand back its log, also when it stops on purpose. */
 const runForAdmin = async (req: Request, res: Response, kind: 'preview' | 'run') => {
   const mode = botMode(req);
-  const budget = budgetOf(req);
+  const budget = usdtOf(req, 'budget');
+  const topUp = usdtOf(req, 'topUp');
   const body = (req.body ?? {}) as { confirm?: unknown; expect?: { sell?: unknown; buy?: unknown } };
   const confirmed = body.confirm === true;
   const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, 50) : []);
@@ -66,10 +67,10 @@ const runForAdmin = async (req: Request, res: Response, kind: 'preview' | 'run')
   if (kind === 'run' && !confirmed) throw new AppError('Confirm the run first.', 400);
   const log: string[] = [];
   const who = req.user?.sub ?? 'unknown';
-  if (kind === 'run') console.log(`[rotation-bot] ${mode} run started from the admin page by user ${who}`);
+  if (kind === 'run') console.log(`[rotation-bot] ${mode} ${topUp ? `top-up of ${topUp} USDT` : 'run'} started from the admin page by user ${who}`);
   try {
     const outcome = await runBot(
-      { mode, follow: BOT_FOLLOWS, budget, dryRun: kind === 'preview', yes: kind === 'run' && confirmed, caller: 'admin', expect },
+      { mode, follow: BOT_FOLLOWS, budget, dryRun: kind === 'preview', yes: kind === 'run' && confirmed, caller: 'admin', expect, topUp },
       (line) => {
         log.push(line);
         if (kind === 'run') console.log(`[rotation-bot ${mode}] ${line}`);
@@ -87,11 +88,11 @@ const runForAdmin = async (req: Request, res: Response, kind: 'preview' | 'run')
   }
 };
 
-// POST /api/v1/admin/rotation-index/bot/:mode/preview { budget? } — what a run would
+// POST /api/v1/admin/rotation-index/bot/:mode/preview { budget?, topUp? } — what a run (or adding topUp USDT) would
 // do now (a dry run: nothing is sent to Binance and nothing is saved).
 export const adminBotPreview = asyncHandler(async (req: Request, res: Response) => runForAdmin(req, res, 'preview'));
 
-// POST /api/v1/admin/rotation-index/bot/:mode/run { confirm: true, expect: { sell, buy }, budget? }
+// POST /api/v1/admin/rotation-index/bot/:mode/run { confirm: true, expect: { sell, buy }, budget?, topUp? }
 // — copy the Rotation Index now with this server's key. `expect` is the preview the
 // owner confirmed; if the orders differ now, the run stops before placing any. Live needs BOT_LIVE_ENABLED=true and
 // BOT_MAX_BUDGET_USDT on the server and a key that cannot withdraw.

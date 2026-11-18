@@ -6,7 +6,7 @@
 import { decide } from '../services/rotation-backtest/engine';
 import type { OrderResult } from '../services/rotation-bot/binance';
 import { applyBuy, applySell, newLedger, reconcile } from '../services/rotation-bot/ledger';
-import { buyAmounts, pickUniverse, planFollow, planReview, reviewStatus, STYLES } from '../services/rotation-bot/planner';
+import { buyAmounts, pickUniverse, planFollow, planReview, reviewStatus, STYLES, topUpBuys } from '../services/rotation-bot/planner';
 import { buildSnapshot } from '../services/rotation-bot/snapshot';
 import { floorToStep, fromUnits, isTradablePair, rulesFor, sizeBuy, sizeSell, toUnits, type BinanceSymbol } from '../services/rotation-bot/sizing';
 
@@ -140,6 +140,17 @@ console.log('buy sizing');
   const tight = buyAmounts(['a', 'b'], 400, 1000, 3, 2);
   check('never spends more cash than the sleeve has', tight.reduce((s, x) => s + x.amount, 0) <= 400 + 1e-9 && tight[1].amount < 70);
   check('respects free slots', buyAmounts(['a', 'b', 'c'], 1000, 1000, 3, 1).length === 1);
+
+  // Top-up: 100 USDT more on a 3-coin sleeve worth ~100 → about 33.3 more of each.
+  const w = new Map([['a', 33.4], ['b', 33.3], ['c', 33.3]]);
+  const even = topUpBuys([{ coin: 'a', value: 33.4 }, { coin: 'b', value: 33.3 }, { coin: 'c', value: 33.3 }], w, 100, 200);
+  check('top-up spreads the cash by index weight', even.length === 3 && Math.abs(even.reduce((x, b) => x + b.amount, 0) - 100) < 1e-6 && Math.abs(even[0].amount - 33.4) < 1e-6);
+  // A coin that ran ahead of its weight gets less, one that lagged gets more.
+  const drift = topUpBuys([{ coin: 'a', value: 50 }, { coin: 'b', value: 25 }, { coin: 'c', value: 25 }], new Map([['a', 33.33], ['b', 33.33], ['c', 33.34]]), 50, 150);
+  check('top-up fills the coins below their weight first', drift.find((b) => b.coin === 'a') === undefined && Math.abs(drift.reduce((x, b) => x + b.amount, 0) - 50) < 1e-6);
+  const tightCash = topUpBuys([{ coin: 'a', value: 10 }, { coin: 'b', value: 10 }], new Map([['a', 50], ['b', 50]]), 5, 120);
+  check('top-up never spends more than the cash', Math.abs(tightCash.reduce((x, b) => x + b.amount, 0) - 5) < 1e-6);
+  check('top-up with no cash buys nothing', topUpBuys([{ coin: 'a', value: 10 }], new Map([['a', 100]]), 0, 10).length === 0);
 }
 
 console.log('ledger booking');
