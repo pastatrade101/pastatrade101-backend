@@ -27,6 +27,10 @@
  *   npm run bot:rotation -- --top-up 100 --dry-run      add 100 USDT from Spot to a sleeve that copies the index
  *                                                     and buy its coins at the index's weights (drop --dry-run to do it)
  *
+ *   Once the investor books are started (admin page), money in and out is per person:
+ *   npm run bot:rotation -- --top-up 50 --investor juma-ally --dry-run    money in for Juma (units at today's price)
+ *   npm run bot:rotation -- --withdraw 20 --investor juma-ally --dry-run  pay 20 USDT of Juma's share out (or --withdraw all)
+ *
  *   npm run bot:rotation -- --mode live --snapshot    balance check: read the account and save a snapshot for
  *                                                     the admin page. Never places an order, so no --yes needed.
  *
@@ -66,6 +70,12 @@ const parseArgs = (argv: string[]): BotRunOptions => {
     } else if (flag === '--top-up') {
       a.topUp = Number(value());
       if (!(a.topUp > 0)) fail('--top-up must be a positive USDT amount.');
+    } else if (flag === '--withdraw') {
+      const v = value();
+      a.withdraw = v === 'all' ? 'all' : Number(v);
+      if (a.withdraw !== 'all' && !(a.withdraw > 0)) fail('--withdraw must be a positive USDT amount, or all.');
+    } else if (flag === '--investor') {
+      a.investorId = value();
     } else if (flag === '--follow') {
       // Bare --follow is the Balanced index; --follow=<id> names another one.
       const v = inline ?? 'rotation-balanced';

@@ -1,5 +1,6 @@
 import { supabase } from '../../config/supabase';
 import type { Balance } from './binance';
+import { unitPriceOf } from './fund';
 import type { HistoryEntry, Ledger } from './ledger';
 
 // What the bot's sleeve holds, saved after every real run (and now and then while
@@ -64,6 +65,8 @@ export interface BotSnapshot {
   spot: { total_usdt: number; assets: SpotAsset[]; more: number } | null;
   /** Newest first. */
   trades: HistoryEntry[];
+  /** The investor books, when started: units outstanding and the unit price at this snapshot. */
+  fund?: { started_at: string; units: number; unit_price: number | null; investors: number } | null;
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -130,7 +133,7 @@ export const buildSnapshot = (input: {
     top_ups: L.topUps ?? [],
     cash_usdt: r2(L.cashUsdt),
     equity_usdt: equity,
-    return_pct: equity == null ? null : r2((equity / L.budgetUsdt - 1) * 100),
+    return_pct: equity == null || !(L.budgetUsdt > 0) ? null : r2((equity / L.budgetUsdt - 1) * 100),
     positions,
     dust: L.dust,
     fees_bnb: L.feesBnb,
@@ -139,7 +142,16 @@ export const buildSnapshot = (input: {
     index: input.index,
     next_review: input.nextReview,
     spot,
-    trades: [...L.history].reverse().slice(0, 20)
+    trades: [...L.history].reverse().slice(0, 20),
+    fund: L.fund
+      ? {
+          started_at: L.fund.startedAt,
+          units: L.fund.units,
+          // From the unrounded value, so the price matches the investor books exactly.
+          unit_price: equity == null ? null : unitPriceOf(L.fund, L.cashUsdt + Object.values(L.positions).reduce((x, p) => x + (prices.has(p.symbol) ? Number(p.qty) * prices.get(p.symbol)! : 0), 0)),
+          investors: Object.keys(L.fund.investors).length
+        }
+      : null
   };
 };
 
@@ -153,7 +165,7 @@ export const saveBotSnapshot = async (s: BotSnapshot): Promise<void> => {
 export interface BotModeView {
   latest: BotSnapshot;
   /** One point per day that had a real run, oldest first. */
-  history: { date: string; equity_usdt: number }[];
+  history: { date: string; equity_usdt: number; unit_price?: number | null }[];
 }
 
 /** The newest snapshot and the value history for each mode — what the admin page shows. */
@@ -167,7 +179,7 @@ export const readBotSnapshots = async (): Promise<{ table_missing: boolean; live
       latest: rows[0].snapshot,
       history: rows
         .filter((r) => r.equity_usdt != null)
-        .map((r) => ({ date: r.date, equity_usdt: Number(r.equity_usdt) }))
+        .map((r) => ({ date: r.date, equity_usdt: Number(r.equity_usdt), unit_price: r.snapshot?.fund?.unit_price ?? null }))
         .reverse()
     };
   };

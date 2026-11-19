@@ -4,9 +4,10 @@ import { INDEXES, isIndexId, readIndexLineUp, type IndexId } from '../rotation-i
 import { BinanceError, createBinance, type Balance, type OrderResult } from './binance';
 import { botKeys, liveEnabled, maxBudgetUsdt } from './config';
 import { BotStop } from './errors';
+import { checkFund, investorUnits, needInvestor, openDeposit, recordWithdrawal, settleDeposit, sleeveValue, unitPriceOf, valueForBooks } from './fund';
 import { applyBuy, applySell, newLedger, reconcile, type Ledger } from './ledger';
 import { buyAmounts, pickUniverse, planFollow, planReview, rankUniverse, reviewStatus, STYLES, topUpBuys, type StyleKey } from './planner';
-import { fromUnits, isTradablePair, rulesFor, sizeBuy, sizeSell, toUnits, type SymbolRules } from './sizing';
+import { floorToStep, fromUnits, isTradablePair, rulesFor, sizeBuy, sizeSell, toUnits, type SymbolRules } from './sizing';
 import { buildSnapshot, saveBotSnapshot, type BotSnapshot } from './snapshot';
 import { openLedgerStore, type BotMode } from './store';
 
@@ -38,6 +39,10 @@ export interface BotRunOptions {
   expect?: { sell: string[]; buy: string[] };
   /** Add this much USDT from the Spot wallet to a started sleeve and buy the index's coins with it. */
   topUp?: number;
+  /** Pay this much USDT (or everything) of an investor's share out of the sleeve: sells their slice of every coin. */
+  withdraw?: number | 'all';
+  /** Whose money comes in (topUp) or goes out (withdraw), once the investor books are started. */
+  investorId?: string;
 }
 
 export interface BotPlan {
@@ -83,6 +88,10 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
   }
   if (a.topUp !== undefined && !(a.topUp > 0)) fail('The amount to add must be a positive USDT amount.');
   if (a.topUp && (snapshotOnly || a.reset || a.force || a.style)) fail('Adding to the sleeve does not combine with --snapshot, --reset, --force or --style.');
+  if (a.withdraw !== undefined && a.withdraw !== 'all' && !(a.withdraw > 0)) fail('The amount to pay out must be a positive USDT amount, or all.');
+  if (a.withdraw !== undefined && (a.topUp || snapshotOnly || a.reset || a.force || a.style)) fail('Paying out does not combine with adding money, --snapshot, --reset, --force or --style.');
+  if (a.withdraw !== undefined && !a.investorId) fail('Say whose money is paid out (the investor).');
+  if (a.investorId && !a.topUp && a.withdraw === undefined) fail('An investor only applies when adding money or paying out.');
   if (a.reset && live) fail('--reset is for testnet only. A live ledger is the record of real money; edit it by hand if you must.');
 
   const store = await openLedgerStore(a.mode, { fileFallback: cli });
@@ -281,7 +290,11 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
       const held = Object.values(L.positions);
       const invested = held.reduce((s, p) => s + valueOf(p.coin), 0);
       const equity = L.cashUsdt + invested;
-      say(`${title}: ${usd(equity)} USDT (${pct((equity / L.budgetUsdt - 1) * 100)} on the ${usd(L.budgetUsdt)} budget)`);
+      say(`${title}: ${usd(equity)} USDT${L.budgetUsdt > 0 ? ` (${pct((equity / L.budgetUsdt - 1) * 100)} on the ${usd(L.budgetUsdt)} budget)` : ''}`);
+      if (L.fund) {
+        const up = unitPriceOf(L.fund, equity);
+        say(`  investor books: ${L.fund.units.toFixed(4)} units${up == null ? '' : ` at ${up.toFixed(4)} USDT a unit`}, ${Object.keys(L.fund.investors).length} people`);
+      }
       for (const p of held) {
         const v = valueOf(p.coin);
         say(`  ${p.asset.padEnd(7)} ${p.qty.padStart(16)}  ${usd(v).padStart(11)} USDT  ${pct((v / p.costUsdt - 1) * 100).padStart(7)}  since ${p.entryDate}`);
@@ -353,6 +366,140 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
       return done('balance-check', status, null, await saveSnapshot(status, { started: !fresh }));
     }
 
+    if (a.withdraw !== undefined) {
+      // ── Pay an investor out of the sleeve ──
+      // Sells the person's slice of every coin (so the rest keep the same mix), takes
+      // their slice of the cash, and moves the payout out of the sleeve's books. The USDT
+      // stays in the Spot wallet: the bot has no way to send money — the owner sends it.
+      const fund = L.fund ?? fail('Start the investor books first — money is paid out per investor.');
+      if (fresh) fail('The sleeve has not started yet — there is nothing to pay out.');
+      const inv = needInvestor(fund, a.investorId!);
+      const held = investorUnits(fund, inv.id);
+      if (!(held > 0)) fail(`${inv.name} has no money in the sleeve.`);
+      const v0 = valueForBooks(L, livePrices);
+      const p0 = unitPriceOf(fund, v0) ?? fail('The books have no units outstanding.');
+      const holding = held * p0;
+      const all = a.withdraw === 'all';
+      const asked = all ? holding : (a.withdraw as number);
+      if (asked > holding + 0.01) fail(`${inv.name}'s share is worth ${usd(holding)} USDT now — less than the ${usd(asked)} USDT asked. Pay out at most that, or choose everything.`);
+      const gross = Math.min(asked, holding);
+      const f = gross >= v0 - 1e-9 ? 1 : gross / v0;
+      const cash0 = L.cashUsdt;
+
+      type Sell = { coin: string; asset: string; rules: SymbolRules; qty: string; value: number; whole: boolean };
+      /** A sell worth about `want` USDT of a coin — or all of it when the rest would be too small for Binance to sell later. */
+      const sizeSlice = (coin: string, want: number): Sell | null => {
+        const pos = L.positions[coin];
+        const rules = rulesBySymbol.get(pos.symbol);
+        const price = livePrices.get(pos.symbol);
+        if (!rules || !price || !(want > 0)) return null;
+        // One step over, so rounding down to Binance's step still raises the amount; any extra stays as sleeve cash.
+        let qty = want >= Number(pos.qty) * price * 0.999999 ? pos.qty : (want / price + Number(rules.stepSize)).toFixed(8);
+        if (qty !== pos.qty && toUnits(qty) >= toUnits(pos.qty)) qty = pos.qty;
+        if (qty !== pos.qty) {
+          const left = toUnits(pos.qty) - toUnits(floorToStep(qty, rules.stepSize));
+          if (left <= 0n || !sizeSell(rules, fromUnits(left), price).ok) qty = pos.qty;
+        }
+        const sized = sizeSell(rules, qty, price);
+        if (!sized.ok) return null;
+        return { coin, asset: pos.asset, rules, qty: sized.value, value: Number(sized.value) * price, whole: qty === pos.qty };
+      };
+      const coins = Object.keys(L.positions).sort((x, y) => valueOf(y) - valueOf(x));
+      const sells: Sell[] = [];
+      let short = 0;
+      for (const coin of coins) {
+        const want = valueOf(coin) * f;
+        const s = sizeSlice(coin, want);
+        if (s) sells.push(s);
+        else short += want;
+      }
+      // A slice too small for Binance's minimum order: take it from the biggest coin that can give it.
+      if (short > 0.01) {
+        const grow = sells.find((s) => !s.whole);
+        const bigger = grow ? sizeSlice(grow.coin, grow.value + short) : null;
+        if (grow && bigger) {
+          short = Math.max(0, short - (bigger.value - grow.value));
+          Object.assign(grow, bigger);
+        } else if (!sells.length) {
+          for (const coin of coins) {
+            const one = sizeSlice(coin, short);
+            if (one) {
+              sells.push(one);
+              short = Math.max(0, short - one.value);
+              break;
+            }
+          }
+        }
+      }
+      const toSell = sells.reduce((x, s) => x + s.value, 0);
+      const estCost = toSell * 0.0015;
+      const estPayout = Math.floor(Math.min(gross - estCost, cash0 + toSell - estCost) * 100) / 100;
+      if (!(estPayout >= 1)) {
+        fail(`Binance won't sell a slice this small (each order must be worth at least its minimum, about 5 USDT) and the sleeve has only ${usd(cash0)} USDT in cash. Pay out a bigger amount.`);
+      }
+      say(
+        `Pay ${inv.name} ${all ? 'everything' : `${usd(gross)} USDT`} — their share is ${held.toFixed(4)} units × ${p0.toFixed(4)} USDT = ${usd(holding)} USDT (${((held / fund.units) * 100).toFixed(1)}% of the sleeve):`
+      );
+      for (const s of sells) say(`  ${dryRun ? 'would sell' : 'sell'} ${s.qty} ${s.asset} (~${usd(s.value)} USDT)${s.whole ? ' — all the sleeve holds, the rest would be too small to sell later' : ''}`);
+      if (cash0 > 0.005) say(`  plus their slice of the sleeve's ${usd(cash0)} USDT cash`);
+      // A slice no coin could take and the rest of the cash can't cover: that part stays in their share.
+      if (short > 0.01 && short > cash0 * (1 - f) + 0.01) {
+        warn(`Only ~${usd(estPayout)} USDT can be raised now — a slice is below Binance's minimum order. The rest stays in ${inv.name}'s share.`);
+      }
+      say(`About ${usd(estPayout)} USDT leaves the sleeve after fees. It stays in the Spot wallet — send it to ${inv.name} yourself; the bot never sends money.`);
+      const wPlan: BotPlan = {
+        keep: coins.filter((c) => !sells.some((s) => s.coin === c && s.whole)).map(assetOf),
+        sell: sells.map((s) => ({ asset: s.asset, reason: `paying out ${inv.name}` })),
+        buy: []
+      };
+      checkExpect(wPlan.sell.map((s) => s.asset), []);
+      if (dryRun) {
+        say();
+        say('DRY RUN — nothing was sent to Binance and nothing was saved.');
+        return done('preview', `Paying ${inv.name} ${all ? 'everything' : `${usd(gross)} USDT`} would sell ${wPlan.sell.map((s) => s.asset).join(', ') || 'nothing (cash only)'}.`, wPlan);
+      }
+
+      say();
+      const sold: string[] = [];
+      for (const s of sells) {
+        const o = await place('SELL', s.coin, s.rules, s.qty, `paid out to ${inv.name}`);
+        if (o) {
+          sold.push(s.asset);
+          say(`  SOLD   ${o.executedQty} ${s.asset} for ${usd(Number(o.cummulativeQuoteQty))} USDT`);
+        }
+      }
+      // What the sells cost, at the same prices the share was worked out with: the person carries it.
+      const v1 = sleeveValue(L, livePrices).value;
+      const cost = Math.max(0, v0 - v1);
+      const usdtNow = Number((await bn.balances()).get('USDT')?.free ?? 0);
+      const payout = Math.floor(Math.min(gross - cost, L.cashUsdt, usdtNow) * 100) / 100;
+      if (!(payout > 0)) {
+        const why = `Nothing was paid out to ${inv.name}: the sells did not raise the cash. The sleeve keeps what was sold as cash.`;
+        warn(why);
+        stamp(why);
+        await store.save(L);
+        return done('traded', why, wPlan, await saveSnapshot(why, { refresh: true }));
+      }
+      const at = new Date().toISOString();
+      const unitsBefore = fund.units;
+      L.cashUsdt = Math.round((L.cashUsdt - payout) * 1e8) / 1e8;
+      L.withdrawals = [...(L.withdrawals ?? []), { at, usdt: payout, investorId: inv.id }];
+      const e = recordWithdrawal(fund, { investorId: inv.id, payout, valueBefore: v0, valueAfterSells: v1, all, at, by: a.caller });
+      // The budget (money put in) shrinks by the share that left, so the return on it still reads right.
+      L.budgetUsdt = unitsBefore > 0 ? Math.round(L.budgetUsdt * (fund.units / unitsBefore) * 1e8) / 1e8 : 0;
+      for (const p of checkFund(fund)) warn(`Investor books: ${p}`);
+      const left = investorUnits(fund, inv.id);
+      say(`  ${inv.name}: ${(-e.units).toFixed(4)} units cancelled at ${e.unitPrice.toFixed(4)} USDT a unit; selling cost ${usd(Math.max(0, e.costUsdt))} USDT.`);
+      if (left > 0) say(`  ${inv.name} still holds ${left.toFixed(4)} units (~${usd(left * p0)} USDT).`);
+      const summary = `Paid ${usd(payout)} USDT out to ${inv.name}${sold.length ? `: sold ${sold.join(', ')}` : ' from cash'}. Send it from Spot.`;
+      stamp(summary);
+      await store.save(L);
+      say();
+      say(`${usd(payout)} USDT is now outside the sleeve, in the Spot wallet. Send it to ${inv.name} from Binance yourself.`);
+      printSleeve('Sleeve after paying out');
+      return done('traded', summary, wPlan, await saveSnapshot(summary, { refresh: true }));
+    }
+
     if (a.topUp) {
       // ── Add money to a sleeve that already copies the index ──
       const add = a.topUp;
@@ -369,6 +516,12 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
         if (dryRun) warn(`${msg} A real run would stop here.`);
         else fail(msg);
       }
+      // Once the investor books are started, every dollar in belongs to someone.
+      const fund = L.fund;
+      if (fund && !a.investorId) fail('The investor books are started — say whose money this is.');
+      if (!fund && a.investorId) fail('The investor books are not started yet — start them first, then add money for someone.');
+      const investor = fund ? needInvestor(fund, a.investorId!) : null;
+      const valueBefore = fund ? valueForBooks(L, livePrices) : 0;
       const before = L.budgetUsdt;
       const after = Math.round((before + add) * 1e8) / 1e8;
       if (live && after > maxBudget) {
@@ -379,22 +532,29 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
       L.budgetUsdt = after;
       L.cashUsdt = Math.round((L.cashUsdt + add) * 1e8) / 1e8;
       L.topUps = [...(L.topUps ?? []), { at: new Date().toISOString(), usdt: add }];
+      // Booked with the money, before any order: if the run stops halfway the money is still theirs.
+      const entry = fund && investor ? openDeposit(fund, { investorId: investor.id, usdt: add, valueBefore, at: new Date().toISOString(), by: a.caller }) : null;
       const weights = new Map(idx.holdings.map((h) => [h.coin, h.weightPct]));
       const held = Object.keys(L.positions).map((coin) => ({ coin, value: valueOf(coin) }));
       const equity = L.cashUsdt + held.reduce((x, h) => x + h.value, 0);
       const buys = topUpBuys(held, weights, L.cashUsdt, equity);
-      say(`Add ${usd(add)} USDT to the sleeve (budget ${usd(before)} → ${usd(after)} USDT), spread over the index's coins by its weights:`);
+      say(`Add ${usd(add)} USDT${investor ? ` for ${investor.name}` : ''} to the sleeve (budget ${usd(before)} → ${usd(after)} USDT), spread over the index's coins by its weights:`);
       for (const b of buys) say(`  ${dryRun ? 'would buy' : 'buy'} ${assetOf(b.coin)} for ~${usd(b.amount)} USDT (${(weights.get(b.coin) ?? 0).toFixed(1)}% in the index)`);
       const tPlan: BotPlan = {
         keep: held.map((h) => assetOf(h.coin)),
         sell: [],
         buy: buys.map((b) => ({ asset: assetOf(b.coin), usdt: Math.round(b.amount * 100) / 100 }))
       };
+      if (entry && investor) {
+        say(
+          `${investor.name} gets ~${entry.units.toFixed(4)} units at ${entry.unitPrice.toFixed(4)} USDT a unit (the sleeve's ${usd(valueBefore)} USDT ÷ ${(entry.unitsAfter - entry.units).toFixed(4)} units). The final number follows from what the orders add, after their fees.`
+        );
+      }
       checkExpect([], tPlan.buy.map((b) => b.asset));
       if (dryRun) {
         say();
         say('DRY RUN — nothing was sent to Binance and nothing was saved.');
-        return done('preview', `Adding ${usd(add)} USDT would buy ${tPlan.buy.map((b) => b.asset).join(', ') || 'nothing'}.`, tPlan);
+        return done('preview', `Adding ${usd(add)} USDT${investor ? ` for ${investor.name}` : ''} would buy ${tPlan.buy.map((b) => b.asset).join(', ') || 'nothing'}.`, tPlan);
       }
 
       // The new budget and cash are booked first, so the money is the sleeve's even if an order fails.
@@ -414,7 +574,18 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
           say(`  BOUGHT ${o.executedQty} ${c.asset} for ${usd(Number(o.cummulativeQuoteQty))} USDT`);
         }
       }
-      const summary = `Added ${usd(add)} USDT to the sleeve: bought ${topped.join(', ') || 'nothing'}.`;
+      if (fund && entry && investor) {
+        // The value the orders added, at the same prices as before: the units pay for that.
+        const now = sleeveValue(L, livePrices);
+        if (!now.missing.length) settleDeposit(fund, entry.id, now.value);
+        say(
+          entry.provisional
+            ? `  ${investor.name}: ${entry.units.toFixed(4)} units at ${entry.unitPrice.toFixed(4)} USDT a unit (kept at the plain price — the value added could not be measured).`
+            : `  ${investor.name}: ${entry.units.toFixed(4)} units at ${entry.unitPrice.toFixed(4)} USDT a unit; buying cost ${usd(entry.costUsdt)} USDT.`
+        );
+        for (const p of checkFund(fund)) warn(`Investor books: ${p}`);
+      }
+      const summary = `Added ${usd(add)} USDT${investor ? ` for ${investor.name}` : ''} to the sleeve: bought ${topped.join(', ') || 'nothing'}.`;
       stamp(summary);
       await store.save(L);
       say();

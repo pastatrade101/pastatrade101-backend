@@ -5,6 +5,7 @@
  */
 import { decide } from '../services/rotation-backtest/engine';
 import type { OrderResult } from '../services/rotation-bot/binance';
+import { addInvestor, checkFund, editInvestor, investorUnits, openDeposit, recordWithdrawal, settleDeposit, sleeveValue, startFund, summarizeFund, unitPriceOf, unitsAtEndOf } from '../services/rotation-bot/fund';
 import { applyBuy, applySell, newLedger, reconcile } from '../services/rotation-bot/ledger';
 import { buyAmounts, pickUniverse, planFollow, planReview, reviewStatus, STYLES, topUpBuys } from '../services/rotation-bot/planner';
 import { buildSnapshot } from '../services/rotation-bot/snapshot';
@@ -222,6 +223,114 @@ console.log('admin snapshot');
   check('snapshot: date and follow are kept', snap.taken_at.startsWith('2026-11-19') && snap.follow === 'rotation-balanced' && snap.started_on === '2026-11-19');
   const waiting = buildSnapshot({ ledger: newLedger('live', 'balanced', 100), started: false, prices, balances: null, status: 'waiting', index: null, nextReview: null });
   check('snapshot: before the first buy there is no value line yet', waiting.equity_usdt === null && waiting.return_pct === null && waiting.spot === null);
+}
+
+console.log('investor books (units)');
+{
+  const near = (a: number | null | undefined, b: number, tol = 1e-6) => a != null && Math.abs(a - b) <= tol;
+  const throws = (fn: () => unknown) => {
+    try {
+      fn();
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const l = newLedger('testnet', 'balanced', 100, new Date('2026-11-01T00:00:00Z'));
+  l.cashUsdt = 1;
+  l.positions.aaa = { coin: 'aaa', asset: 'AAA', symbol: 'AAAUSDT', qty: '10', entryDate: '2026-11-01', costUsdt: 49.5 };
+  l.positions.bbb = { coin: 'bbb', asset: 'BBB', symbol: 'BBBUSDT', qty: '100', entryDate: '2026-11-01', costUsdt: 49.5 };
+  const v0 = sleeveValue(l, new Map([['AAAUSDT', 5], ['BBBUSDT', 0.5]]));
+  check('value: cash plus coins at the given prices', v0.value === 101 && v0.missing.length === 0, JSON.stringify(v0));
+  check('value: a coin with no price is reported, not counted as zero silently', sleeveValue(l, new Map([['AAAUSDT', 5]])).missing.join() === 'BBB');
+
+  const open = startFund(l, { ownerName: '  Pastory   Joseph ', value: 101, at: '2026-11-19T10:00:00Z', by: 'test' });
+  const f = l.fund!;
+  check('start: the owner gets one unit per USDT put in so far', f.units === 100 && investorUnits(f, 'owner') === 100);
+  check('start: opening unit price is value ÷ budget', open.unitPrice === 1.01, String(open.unitPrice));
+  check('start: the name is tidied', f.investors.owner.name === 'Pastory Joseph' && f.investors.owner.owner);
+  check('start: books can only be started once', throws(() => startFund(l, { ownerName: 'x', value: 101, at: '2026-11-19T10:00:00Z', by: 'test' })));
+
+  const juma = addInvestor(f, { name: 'Juma Ally', note: 'school friend', at: '2026-11-19T10:01:00Z' });
+  check('investor: id comes from the name', juma.id === 'juma-ally' && !juma.owner);
+  check('investor: the same name twice is refused', throws(() => addInvestor(f, { name: 'juma ally', at: '2026-11-19T10:01:00Z' })));
+  check('investor: a name that slugs to "owner" gets its own id', addInvestor(f, { name: 'Owner', at: '2026-11-19T10:01:00Z' }).id === 'owner-2');
+  check('investor: an empty name is refused', throws(() => addInvestor(f, { name: '   ', at: '2026-11-19T10:01:00Z' })));
+  editInvestor(f, 'owner-2', { name: 'Neema', note: 'cousin' });
+  check('investor: rename and note', f.investors['owner-2'].name === 'Neema' && f.investors['owner-2'].note === 'cousin');
+  check('investor: rename onto a taken name is refused', throws(() => editInvestor(f, 'owner-2', { name: 'Juma Ally' })));
+
+  // Juma puts in 50 USDT at a unit price of 1.01; the buys cost 0.10 of it.
+  const dep = openDeposit(f, { investorId: 'juma-ally', usdt: 50, valueBefore: 101, at: '2026-11-19T11:00:00Z', by: 'test' });
+  check('deposit: booked first at the plain unit price', dep.provisional === true && near(dep.units, 50 / 1.01, 1e-8) && near(f.units, 100 + 50 / 1.01, 1e-8));
+  check('deposit: an unknown investor is refused', throws(() => openDeposit(f, { investorId: 'nobody', usdt: 5, valueBefore: 101, at: 'x', by: 'test' })));
+  settleDeposit(f, dep.id, 150.9);
+  check('deposit: settled units pay for the value actually added', near(dep.units, 49.9 / 1.01, 1e-8) && !dep.provisional && near(dep.costUsdt, 0.1, 1e-8));
+  check('deposit: the unit price does not move when money comes in', near(unitPriceOf(f, 150.9), 1.01, 1e-8), String(unitPriceOf(f, 150.9)));
+  check('deposit: settling twice is refused', throws(() => settleDeposit(f, dep.id, 150.9)));
+
+  // The market rises 10%: everyone's share rises 10%, whenever they joined.
+  const up = 150.9 * 1.1;
+  const s1 = summarizeFund(f, up);
+  const owner1 = s1.investors.find((x) => x.id === 'owner')!;
+  const juma1 = s1.investors.find((x) => x.id === 'juma-ally')!;
+  check('growth: the owner is up 10% on the opening value', near(owner1.valueUsdt, 111.1, 1e-6), String(owner1.valueUsdt));
+  check('growth: Juma is up 10% on the value their money added', near(juma1.valueUsdt, 49.9 * 1.1, 1e-6) && near(juma1.sinceJoinedPct, 10, 1e-6), JSON.stringify(juma1));
+  check('growth: gain counts what Juma put in, costs included', near(juma1.gainUsdt, 49.9 * 1.1 - 50, 1e-6) && near(juma1.gainPct, ((49.9 * 1.1 - 50) / 50) * 100, 1e-6));
+  check('growth: shares add up to 100%', near(s1.investors.reduce((x, i) => x + i.sharePct, 0), 100, 1e-9));
+  check('growth: someone with no money in shows zero', s1.investors.find((x) => x.id === 'owner-2')!.units === 0);
+
+  // Juma takes everything out: the sells cost 0.10, the payout is the rest.
+  const p0 = up / f.units;
+  const jumaValue = investorUnits(f, 'juma-ally') * p0;
+  const w = recordWithdrawal(f, { investorId: 'juma-ally', payout: jumaValue - 0.1, valueBefore: up, valueAfterSells: up - 0.1, all: true, at: '2026-11-25T09:00:00Z', by: 'test' });
+  check('withdraw all: Juma ends at zero units', investorUnits(f, 'juma-ally') === 0 && near(w.costUsdt, 0.1, 1e-6), JSON.stringify(w));
+  check('withdraw all: the others keep their unit price', near(unitPriceOf(f, w.valueAfter), p0, 1e-8));
+  const juma2 = summarizeFund(f, w.valueAfter).investors.find((x) => x.id === 'juma-ally')!;
+  check('withdraw all: no "since joined" once everything is out', juma2.firstAt === null && juma2.sinceJoinedPct === null);
+  check('withdraw all: the statement shows what came back', near(juma2.takenOutUsdt, jumaValue - 0.1, 1e-6) && near(juma2.gainUsdt, jumaValue - 0.1 - 50, 1e-6));
+
+  // The owner takes 20 USDT worth out; 0.05 goes on selling.
+  const v2 = w.valueAfter;
+  const pBefore = v2 / f.units;
+  const w2 = recordWithdrawal(f, { investorId: 'owner', payout: 19.95, valueBefore: v2, valueAfterSells: v2 - 0.05, all: false, at: '2026-11-26T09:00:00Z', by: 'test' });
+  check('withdraw part: units cancelled cover payout plus cost', near(w2.units, -20 / pBefore, 1e-8) && near(f.units, 100 - 20 / pBefore, 1e-6));
+  check('withdraw part: the unit price stays the same', near(unitPriceOf(f, w2.valueAfter), pBefore, 1e-8));
+  check('withdraw: never more units than held', throws(() => recordWithdrawal(f, { investorId: 'juma-ally', payout: 5, valueBefore: 90, valueAfterSells: 90, all: false, at: 'x', by: 'test' })));
+  const before = f.units;
+  const w3 = recordWithdrawal(f, { investorId: 'owner', payout: 500, valueBefore: w2.valueAfter, valueAfterSells: w2.valueAfter, all: false, at: '2026-11-27T09:00:00Z', by: 'test' });
+  check('withdraw: a payout above the holding cancels only what is held', near(w3.units, -before, 1e-8) && f.units === 0);
+  check('books: no units left means no unit price', unitPriceOf(f, 10) === null && throws(() => openDeposit(f, { investorId: 'owner', usdt: 5, valueBefore: 10, at: 'x', by: 'test' })));
+
+  check('books: the entries add up', checkFund(f).length === 0, checkFund(f).join(' | '));
+  check('books: units at the end of a day follow the entries', unitsAtEndOf(f, '2026-11-18') === null && near(unitsAtEndOf(f, '2026-11-19'), 100 + 49.9 / 1.01, 1e-6) && unitsAtEndOf(f, '2026-11-27') === 0);
+  const copy = JSON.parse(JSON.stringify(l)) as typeof l;
+  check('books: survive the ledger save (JSON round trip)', copy.fund?.entries.length === f.entries.length && copy.fund?.units === f.units);
+  copy.fund!.units = 3;
+  check('books: a total that does not add up is caught', checkFund(copy.fund!).length === 1);
+
+  // Someone takes everything out, then comes back: "since joined" starts from the new money in.
+  const l3 = newLedger('testnet', 'balanced', 100);
+  startFund(l3, { ownerName: 'Owner', value: 100, at: '2026-11-01T00:00:00Z', by: 'test' });
+  const f3 = l3.fund!;
+  addInvestor(f3, { name: 'Asha', at: '2026-11-01T00:00:00Z' });
+  const a1 = openDeposit(f3, { investorId: 'asha', usdt: 50, valueBefore: 100, at: '2026-11-02T00:00:00Z', by: 'test' });
+  settleDeposit(f3, a1.id, 150);
+  // Price doubles (300), Asha takes all out (100 USDT), price stays 2.0; Asha comes back with 20 at 2.0, then +10%.
+  recordWithdrawal(f3, { investorId: 'asha', payout: 100, valueBefore: 300, valueAfterSells: 300, all: true, at: '2026-11-10T00:00:00Z', by: 'test' });
+  const a2 = openDeposit(f3, { investorId: 'asha', usdt: 20, valueBefore: 200, at: '2026-11-20T00:00:00Z', by: 'test' });
+  settleDeposit(f3, a2.id, 220);
+  const asha = summarizeFund(f3, 242).investors.find((x) => x.id === 'asha')!;
+  check('rejoin: "since joined" restarts from the new money in', asha.firstAt === '2026-11-20T00:00:00Z' && near(asha.sinceJoinedPct, 10, 1e-6), JSON.stringify(asha));
+  check('rejoin: put in and taken out count every dollar', near(asha.putInUsdt, 70, 1e-9) && near(asha.takenOutUsdt, 100, 1e-9) && near(asha.gainUsdt, 22 + 100 - 70, 1e-6));
+  check('rejoin: the books add up', checkFund(f3).length === 0, checkFund(f3).join(' | '));
+
+  // A deposit whose value change looks wrong keeps the plain units instead of guessing.
+  const l2 = newLedger('testnet', 'balanced', 10);
+  startFund(l2, { ownerName: 'A', value: 10, at: '2026-11-19T00:00:00Z', by: 'test' });
+  const odd = openDeposit(l2.fund!, { investorId: 'owner', usdt: 10, valueBefore: 10, at: '2026-11-19T01:00:00Z', by: 'test' });
+  settleDeposit(l2.fund!, odd.id, 9);
+  check('deposit: an odd settle value leaves it provisional', odd.provisional === true && odd.units === 10);
 }
 
 console.log(failures ? `\n${failures} test(s) FAILED` : '\nAll rotation bot tests passed.');

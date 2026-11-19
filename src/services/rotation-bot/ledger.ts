@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { OrderResult } from './binance';
+import type { Fund } from './fund';
 import type { StyleKey } from './planner';
 import { fromUnits, sizeSell, toUnits, type SymbolRules } from './sizing';
 
@@ -61,6 +62,10 @@ export interface Ledger {
   history: HistoryEntry[];
   /** Money added to the sleeve after its first run (USDT), oldest first. */
   topUps?: { at: string; usdt: number }[];
+  /** Money paid out of the sleeve to an investor (USDT), oldest first. */
+  withdrawals?: { at: string; usdt: number; investorId: string }[];
+  /** The investor books: who owns which part of the sleeve (see fund.ts). Absent until the owner starts them. */
+  fund?: Fund;
   /** The latest real run that kept these books, in one sentence. */
   lastRun?: { at: string; summary: string; by: 'cli' | 'admin' } | null;
 }

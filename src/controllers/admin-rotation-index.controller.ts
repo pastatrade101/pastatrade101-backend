@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { BotStop } from '../services/rotation-bot/errors';
+import { addBooksInvestor, editBooksInvestor, readFundView, startBooks } from '../services/rotation-bot/fund-books';
 import { BOT_FOLLOWS, readLiveWallet } from '../services/rotation-bot/live';
 import { runBot } from '../services/rotation-bot/runner';
 import { readBotSnapshots } from '../services/rotation-bot/snapshot';
@@ -46,6 +47,15 @@ const usdtOf = (req: Request, field: 'budget' | 'topUp'): number | undefined => 
   return n;
 };
 
+/** A pay-out amount: a positive USDT amount, or "all". */
+const withdrawOf = (v: unknown): number | 'all' | undefined => {
+  if (v == null || v === '') return undefined;
+  if (v === 'all') return 'all';
+  const n = Number(v);
+  if (!(n > 0 && n <= 10_000_000)) throw new AppError('The amount to pay out must be a positive USDT amount, or all.', 400);
+  return n;
+};
+
 // GET /api/v1/admin/rotation-index/bot/:mode/live — the Binance account right now
 // (balances and prices read with this server's key; read-only) and whether this
 // server may trade. The page polls it.
@@ -59,7 +69,9 @@ const runForAdmin = async (req: Request, res: Response, kind: 'preview' | 'run')
   const mode = botMode(req);
   const budget = usdtOf(req, 'budget');
   const topUp = usdtOf(req, 'topUp');
-  const body = (req.body ?? {}) as { confirm?: unknown; expect?: { sell?: unknown; buy?: unknown } };
+  const body = (req.body ?? {}) as { confirm?: unknown; expect?: { sell?: unknown; buy?: unknown }; withdraw?: unknown; investorId?: unknown };
+  const withdraw = withdrawOf(body.withdraw);
+  const investorId = typeof body.investorId === 'string' && body.investorId.trim() ? body.investorId.trim().slice(0, 64) : undefined;
   const confirmed = body.confirm === true;
   const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, 50) : []);
   const expect = kind === 'run' && body.expect ? { sell: list(body.expect.sell), buy: list(body.expect.buy) } : undefined;
@@ -67,10 +79,11 @@ const runForAdmin = async (req: Request, res: Response, kind: 'preview' | 'run')
   if (kind === 'run' && !confirmed) throw new AppError('Confirm the run first.', 400);
   const log: string[] = [];
   const who = req.user?.sub ?? 'unknown';
-  if (kind === 'run') console.log(`[rotation-bot] ${mode} ${topUp ? `top-up of ${topUp} USDT` : 'run'} started from the admin page by user ${who}`);
+  const what = topUp ? `top-up of ${topUp} USDT${investorId ? ` for ${investorId}` : ''}` : withdraw !== undefined ? `pay-out of ${withdraw} to ${investorId}` : 'run';
+  if (kind === 'run') console.log(`[rotation-bot] ${mode} ${what} started from the admin page by user ${who}`);
   try {
     const outcome = await runBot(
-      { mode, follow: BOT_FOLLOWS, budget, dryRun: kind === 'preview', yes: kind === 'run' && confirmed, caller: 'admin', expect, topUp },
+      { mode, follow: BOT_FOLLOWS, budget, dryRun: kind === 'preview', yes: kind === 'run' && confirmed, caller: 'admin', expect, topUp, withdraw, investorId },
       (line) => {
         log.push(line);
         if (kind === 'run') console.log(`[rotation-bot ${mode}] ${line}`);
@@ -97,3 +110,42 @@ export const adminBotPreview = asyncHandler(async (req: Request, res: Response) 
 // owner confirmed; if the orders differ now, the run stops before placing any. Live needs BOT_LIVE_ENABLED=true and
 // BOT_MAX_BUDGET_USDT on the server and a key that cannot withdraw.
 export const adminBotRun = asyncHandler(async (req: Request, res: Response) => runForAdmin(req, res, 'run'));
+
+/** Book-only changes stop on purpose with a reason the page shows as-is. */
+const books = async <T>(res: Response, message: string, work: () => Promise<T>) => {
+  try {
+    return sendSuccess(res, message, await work());
+  } catch (e) {
+    if (e instanceof BotStop) throw new AppError(e.message, 400);
+    throw e;
+  }
+};
+
+const text = (v: unknown) => (typeof v === 'string' ? v : undefined);
+
+// GET /api/v1/admin/rotation-index/bot/:mode/fund — the investor books with today's
+// Binance prices: units, value, money in and out, and gain per person (read-only).
+export const adminBotFund = asyncHandler(async (req: Request, res: Response) => {
+  return sendSuccess(res, 'Investor books fetched.', await readFundView(botMode(req)));
+});
+
+// POST /api/v1/admin/rotation-index/bot/:mode/fund/start { ownerName } — open the books:
+// the sleeve as it stands belongs to the owner. Writes the books only; no orders.
+export const adminBotFundStart = asyncHandler(async (req: Request, res: Response) => {
+  const mode = botMode(req);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  console.log(`[rotation-bot] ${mode} investor books started by user ${req.user?.sub ?? 'unknown'}`);
+  return books(res, 'Investor books started.', () => startBooks(mode, text(body.ownerName) ?? '', `admin:${req.user?.sub ?? 'unknown'}`));
+});
+
+// POST /api/v1/admin/rotation-index/bot/:mode/fund/investors { name, note? } — add a person (no money yet).
+export const adminBotFundAddInvestor = asyncHandler(async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  return books(res, 'Investor added.', () => addBooksInvestor(botMode(req), { name: text(body.name) ?? '', note: text(body.note) }));
+});
+
+// PATCH /api/v1/admin/rotation-index/bot/:mode/fund/investors/:id { name?, note? } — rename or change the note.
+export const adminBotFundEditInvestor = asyncHandler(async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  return books(res, 'Investor updated.', () => editBooksInvestor(botMode(req), String(req.params.id), { name: text(body.name), note: text(body.note) }));
+});
