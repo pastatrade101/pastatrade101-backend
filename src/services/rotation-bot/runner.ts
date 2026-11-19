@@ -617,6 +617,8 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
       }
       if (lineUp.pending) warn(`The index's review from ${lineUp.pending.decided} still hasn't fully filled — copying what it holds now.`);
       const raw = planFollow(Object.keys(L.positions), targetIds);
+      // A sleeve switching to this index sells what it doesn't hold; the index never sold those.
+      if (converting) raw.drops = raw.drops.map((d) => ({ ...d, reason: 'the index doesn’t hold it' }));
       for (const c of raw.adds.filter((id) => !byId.has(id))) {
         warn(`${assetOf(c)}: the index holds it, but it can't be bought on Binance ${a.mode} (${whyNot(c)}) — its slot stays in cash.`);
       }
