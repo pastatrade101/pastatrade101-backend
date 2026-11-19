@@ -1,11 +1,12 @@
 import { supabase } from '../../config/supabase';
-import { isNonCryptoBeta } from '../../utils/asset-class';
+import { isGoldToken, isNonCryptoBeta } from '../../utils/asset-class';
 import { cacheClear } from '../../utils/cache';
 import { getBtcPriceHistory } from '../sources/blockchaincom.client';
 import { coingeckoThrottleMs, getMarketChart, type CgMarketChart } from '../sources/coingecko.client';
 import { upsertSeries, type SeriesRow } from '../series/store';
 import { syncAltBtcSignals } from './sync-altbtc-signals';
 import { stepRotationIndexes } from '../rotation-index/rotationIndex.service';
+import { syncIndexExtras } from '../rotation-index/extras';
 
 
 // Always include BTC + the Lab baskets so default selections always have data,
@@ -63,6 +64,8 @@ export const syncPriceSeries = async (): Promise<number> => {
   );
 
   // 2) Resolve the CoinGecko coin set: top 100 by market cap (ex-stables) + ALWAYS.
+  //    Gold tokens stay in: the Rotation Index may hold them (rotationData keeps them too),
+  //    and without fresh prices they drop to a zero market cap and out of its top 20.
   const { data: top } = await supabase
     .from('coins')
     .select('coingecko_id, symbol, name, market_cap_rank, current_price, price_change_pct_30d')
@@ -72,7 +75,7 @@ export const syncPriceSeries = async (): Promise<number> => {
 
   const ids = new Set<string>(ALWAYS);
   for (const c of top ?? []) {
-    if (c.coingecko_id && !isNonCryptoBeta(c)) ids.add(c.coingecko_id);
+    if (c.coingecko_id && (!isNonCryptoBeta(c) || isGoldToken(c))) ids.add(c.coingecko_id);
   }
 
   // 3) Fetch + persist each (throttled).
@@ -89,6 +92,14 @@ export const syncPriceSeries = async (): Promise<number> => {
       console.warn(`Price-series sync skipped ${id}: ${error instanceof Error ? error.message : error}`);
     }
     await sleep(coingeckoThrottleMs);
+  }
+
+  // 4) The stock tokens the Rotation Index may hold (Binance daily prices, public data).
+  //    Non-fatal: the index then values them at their last saved price.
+  try {
+    console.log(`[price-series] index stock tokens: ${(await syncIndexExtras()).join(' · ')}`);
+  } catch (error) {
+    console.warn(`[price-series] index stock tokens skipped: ${error instanceof Error ? error.message : error}`);
   }
 
   // Drop in-memory caches so the signal pass + Labs read the fresh series.

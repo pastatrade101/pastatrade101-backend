@@ -1,11 +1,12 @@
 import { supabase } from '../../config/supabase';
 import { rankAt } from '../rotation-backtest/engine';
-import { loadPriceMatrix, type PriceMatrix } from '../rotation-backtest/rotationData.service';
+import type { PriceMatrix } from '../rotation-backtest/rotationData.service';
 import { createBinance } from '../rotation-bot/binance';
 import { addDays, pickUniverse, STYLES } from '../rotation-bot/planner';
 import { isTradablePair, rulesFor, type SymbolRules } from '../rotation-bot/sizing';
 import { readSeries, readSeriesFull } from '../series/store';
 import { newIndexState, stepDay, type IndexConfig, type IndexState, type PendingReview, type ReviewRecord, type Trade } from './indexEngine';
+import { INDEX_EXTRAS, isIndexExtra, loadIndexMatrix } from './extras';
 
 // Runs the Rotation Index forward over the SAVED daily prices and stores one row per
 // day in rotation_index_days (see indexEngine.ts for the rules). Stepped after every
@@ -93,13 +94,19 @@ export interface StepResult {
  */
 export const stepRotationIndex = async (
   id: IndexId,
-  { start = false, dryRun = false, from }: { start?: boolean; dryRun?: boolean; from?: string } = {}
+  {
+    start = false,
+    dryRun = false,
+    from,
+    matrix
+  }: { start?: boolean; dryRun?: boolean; from?: string; /** Dry runs only: use these prices instead of the saved ones. */ matrix?: PriceMatrix } = {}
 ): Promise<StepResult> => {
+  if (matrix && !dryRun) throw new Error('A price matrix can only be passed to a dry run.');
   if (from && !dryRun) throw new Error('--from replays the past and is only allowed with --dry-run.');
   const { config } = INDEXES[id];
   const style = config.style;
   const warnings: string[] = [];
-  const m = await loadPriceMatrix();
+  const m = matrix ?? (await loadIndexMatrix());
   const dates = m.dates;
   const lastFinal = dates.length - 2;
   if (lastFinal < style.lookbackDays) throw new Error('Not enough saved prices to rank coins yet.');
@@ -126,6 +133,9 @@ export const stepRotationIndex = async (
     warnings.push(`Binance unreachable — using the tradable-coin list saved on ${tradable.asOf}.`);
   }
   const tradableIds = tradable.ids.filter((c) => m.prices[c]);
+  // Coins go through the top-20 size cut; the stock tokens have no market cap and join every review as they are.
+  const coinIds = tradableIds.filter((c) => !isIndexExtra(c));
+  const extraIds = tradableIds.filter(isIndexExtra);
 
   // Holdings that left the Lab's coin list still need prices.
   const extra = new Map<string, Map<string, number>>();
@@ -145,10 +155,10 @@ export const stepRotationIndex = async (
     }
     return caps.get(coin)!;
   };
-  await Promise.all(tradableIds.map(capOf));
+  await Promise.all(coinIds.map(capOf));
   const rank = new Map(m.coins.map((c) => [c.id, c.rank]));
   const bySize = (i: number) =>
-    tradableIds
+    coinIds
       .map((coin) => ({ coin, marketCap: caps.get(coin)?.get(dates[i]) ?? 0 }))
       .sort((a, b) => b.marketCap - a.marketCap || (rank.get(a.coin) ?? 999) - (rank.get(b.coin) ?? 999));
 
@@ -159,7 +169,7 @@ export const stepRotationIndex = async (
       {
         date: dates[i],
         price: (coin) => priceAt(coin, i),
-        universe: () => bySize(i).slice(0, style.universeSize).map((x) => x.coin),
+        universe: () => [...bySize(i).slice(0, style.universeSize).map((x) => x.coin), ...extraIds.filter((c) => priceAt(c, i) != null)],
         ranking: (universe) => {
           const sub: Record<string, (number | null)[]> = {};
           for (const c of universe) sub[c] = m.prices[c];
@@ -272,7 +282,9 @@ const indexMeta = (id: IndexId) => {
     fee_pct: config.feePct,
     base: config.base,
     top10_size: config.top10Size,
-    top10_rebalance_days: config.top10RebalanceDays
+    top10_rebalance_days: config.top10RebalanceDays,
+    /** Stock tokens that join every review next to the top coins. */
+    extras: INDEX_EXTRAS.map((x) => ({ symbol: x.symbol, name: x.name }))
   };
 };
 
@@ -286,7 +298,7 @@ export const getRotationIndexView = async (id: IndexId) => {
     throw error;
   }
   if (!rows.length) return { index: indexMeta(id), started: false as const, table_missing: false };
-  return buildIndexView(id, rows, await loadPriceMatrix());
+  return buildIndexView(id, rows, await loadIndexMatrix());
 };
 
 /** The page's data from saved day rows (also used to preview a dry-run replay). */

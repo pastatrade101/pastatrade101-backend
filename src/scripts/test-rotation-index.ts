@@ -5,6 +5,7 @@
 import type { RankRow } from '../services/rotation-backtest/engine';
 import { newIndexState, stepDay, type DayInput, type IndexConfig, type IndexState } from '../services/rotation-index/indexEngine';
 import { STYLES } from '../services/rotation-bot/planner';
+import { isIndexExtra, mergeExtras } from '../services/rotation-index/extras';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -78,6 +79,27 @@ const d31 = stepDay(st, input(31, up, undefined, { bitcoin: 1, a: 1 }), cfg);
 check('reweights 30 days after the start', d31.top10Trades.length > 0 && d31.state.top10.lastRebalance === day(31));
 const w = d31.state.top10.holdings;
 check('to the new market-cap weights', near(w.bitcoin * 110, w.a * 20, 1e-3), `${w.bitcoin * 110} vs ${w.a * 20}`);
+
+console.log('stock tokens in the price list');
+{
+  const m = {
+    dates: [day(0), day(1), day(2)],
+    prices: { bitcoin: [1, 2, 3] },
+    coins: [{ id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', image: null, rank: 1 }],
+    coingeckoFrom: null
+  };
+  const merged = mergeExtras(
+    m,
+    new Map([
+      ['SPYB', [{ date: day(0), value: 700 }, { date: day(2), value: 710 }, { date: day(9), value: 999 }]],
+      ['QQQB', []]
+    ])
+  );
+  check('lined up on the same dates, a missing day stays empty', merged.prices['bstock-spyb']?.join() === '700,,710');
+  check('a token with no saved prices is left out', !merged.prices['bstock-qqqb'] && !merged.coins.some((c) => c.id === 'bstock-qqqb'));
+  check('listed after every coin, so size cuts never pick it', merged.coins[merged.coins.length - 1].id === 'bstock-spyb' && merged.coins[merged.coins.length - 1].rank > 1000);
+  check('the coins and their prices are left as they were', m.coins.length === 1 && Object.keys(m.prices).join() === 'bitcoin' && isIndexExtra('bstock-spyb') && !isIndexExtra('bitcoin'));
+}
 
 console.log(failures ? `\n${failures} test(s) FAILED` : '\nAll rotation index tests passed.');
 process.exit(failures ? 1 : 0);

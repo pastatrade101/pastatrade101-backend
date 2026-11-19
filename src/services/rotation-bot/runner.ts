@@ -1,6 +1,7 @@
 import { runRotation } from '../rotation-backtest/engine';
 import { loadPriceMatrix } from '../rotation-backtest/rotationData.service';
 import { INDEXES, isIndexId, readIndexLineUp, type IndexId } from '../rotation-index/rotationIndex.service';
+import { loadIndexMatrix } from '../rotation-index/extras';
 import { BinanceError, createBinance, type Balance, type OrderResult } from './binance';
 import { botKeys, liveEnabled, maxBudgetUsdt } from './config';
 import { BotStop } from './errors';
@@ -149,8 +150,9 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
     }
 
     // ── Market data: saved daily closes (the rule's input) + Binance pairs and prices ──
+    // Following the index: its price list, which also carries the stock tokens it may hold.
     const [m, symbols, livePrices, lineUp] = await Promise.all([
-      loadPriceMatrix(),
+      following ? loadIndexMatrix() : loadPriceMatrix(),
       bn.exchangeInfo(),
       bn.prices(),
       following ? readIndexLineUp(following) : Promise.resolve(null)
