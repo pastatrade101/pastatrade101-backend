@@ -98,7 +98,8 @@ export const stepRotationIndex = async (
     dryRun = false,
     from,
     to,
-    matrix
+    matrix,
+    btcTrendDays
   }: {
     start?: boolean;
     dryRun?: boolean;
@@ -107,9 +108,11 @@ export const stepRotationIndex = async (
     to?: string;
     /** Dry runs only: use these prices instead of the saved ones. */
     matrix?: PriceMatrix;
+    /** Dry runs only: on a review day with BTC below its N-day average, rank nothing (sell all, stay in cash). */
+    btcTrendDays?: number;
   } = {}
 ): Promise<StepResult> => {
-  if ((matrix || to) && !dryRun) throw new Error('A price matrix or an end date can only be passed to a dry run.');
+  if ((matrix || to || btcTrendDays) && !dryRun) throw new Error('A price matrix, an end date or a BTC trend switch can only be passed to a dry run.');
   if (from && !dryRun) throw new Error('--from replays the past and is only allowed with --dry-run.');
   const { config } = INDEXES[id];
   const style = config.style;
@@ -170,6 +173,18 @@ export const stepRotationIndex = async (
       .map((coin) => ({ coin, marketCap: caps.get(coin)?.get(dates[i]) ?? 0 }))
       .sort((a, b) => b.marketCap - a.marketCap || (rank.get(a.coin) ?? 999) - (rank.get(b.coin) ?? 999));
 
+  const btcCloses = m.prices.bitcoin ?? [];
+  const btcBelowAverage = (i: number) => {
+    if (!btcTrendDays || i + 1 < btcTrendDays) return false;
+    let sum = 0;
+    for (let k = i - btcTrendDays + 1; k <= i; k += 1) {
+      const p = btcCloses[k];
+      if (p == null) return false;
+      sum += p;
+    }
+    return (btcCloses[i] ?? Infinity) < sum / btcTrendDays;
+  };
+
   const rows: DayRow[] = [];
   for (let i = firstIdx; i <= lastFinal; i += 1) {
     const r = stepDay(
@@ -179,6 +194,7 @@ export const stepRotationIndex = async (
         price: (coin) => priceAt(coin, i),
         universe: () => bySize(i).slice(0, style.universeSize).map((x) => x.coin),
         ranking: (universe) => {
+          if (btcBelowAverage(i)) return [];
           const sub: Record<string, (number | null)[]> = {};
           for (const c of universe) sub[c] = m.prices[c];
           return rankAt({ prices: sub, btc: m.prices.bitcoin }, style.signal, style.lookbackDays, i, style.filter);
