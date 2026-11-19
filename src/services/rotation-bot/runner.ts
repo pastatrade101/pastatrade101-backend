@@ -3,6 +3,7 @@ import { loadPriceMatrix } from '../rotation-backtest/rotationData.service';
 import { INDEXES, isIndexId, readIndexLineUp, type IndexId } from '../rotation-index/rotationIndex.service';
 import { BinanceError, createBinance, type Balance, type OrderResult } from './binance';
 import { botKeys, liveEnabled, maxBudgetUsdt } from './config';
+import { BOT_FOLLOWS } from './live';
 import { BotStop } from './errors';
 import { checkFund, investorUnits, needInvestor, openDeposit, recordWithdrawal, settleDeposit, sleeveValue, unitPriceOf, valueForBooks } from './fund';
 import { applyBuy, applySell, newLedger, reconcile, type Ledger } from './ledger';
@@ -105,12 +106,14 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
 
     let ledger: Ledger | null = a.reset ? null : await store.load({ adopt: !dryRun && !snapshotOnly });
     for (const n of store.notes) warn(n);
-    const followId = a.follow ?? ledger?.follow;
+    // Live money follows only the index set for it in BOT_FOLLOWS (live.ts). A live sleeve on
+    // another index switches to that one on its next run, from the admin page or the CLI alike
+    // (it sells what the new index doesn't hold and buys what it does). A testnet sleeve may
+    // follow any index.
+    if (live && a.follow && a.follow !== BOT_FOLLOWS.live) fail(`Live follows ${BOT_FOLLOWS.live} (set in rotation-bot/live.ts), not ${a.follow}.`);
+    const followId = a.follow ?? (live && ledger?.follow ? BOT_FOLLOWS.live : ledger?.follow);
     const following: IndexId | undefined =
       followId === undefined ? undefined : isIndexId(followId) ? followId : fail(`This ledger follows "${followId}", which is not a known index.`);
-    // Live money never changes index by itself; a testnet sleeve may switch (it sells
-    // what the new index doesn't hold and buys what it does).
-    if (live && ledger?.follow && a.follow && a.follow !== ledger.follow) fail(`This ${a.mode} ledger follows ${ledger.follow}, not ${a.follow}.`);
     if (following && a.style) fail('--style does not apply when following the index: the index sets the rule.');
     if (following && a.force) fail('--force does not apply when following the index: the index decides when to trade.');
     if (!following && ledger && a.style && a.style !== ledger.style) {

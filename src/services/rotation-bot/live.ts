@@ -10,10 +10,11 @@ import { isLedgerLocked, LEDGER_TABLE_MISSING, openLedgerStore, type BotMode } f
 // can place an order), plus what the bot's ledger says the sleeve owns.
 
 /**
- * The index each sleeve follows from the admin page. Live stays on Balanced; testnet
- * tries Balanced + BTC switch first. Moving live to another index is the owner's call.
+ * The index each sleeve follows, from the admin page and the CLI. Both follow Balanced +
+ * BTC switch (live since 19 Nov 2026, the owner's call). Changing the live entry moves real
+ * money: the sleeve's next run sells what the new index doesn't hold and buys what it does.
  */
-export const BOT_FOLLOWS: Record<BotMode, IndexId> = { live: 'rotation-balanced', testnet: 'rotation-balanced-switch' };
+export const BOT_FOLLOWS: Record<BotMode, IndexId> = { live: 'rotation-balanced-switch', testnet: 'rotation-balanced-switch' };
 
 /** Polls within this window share one Binance read. */
 const FRESH_MS = 4_000;

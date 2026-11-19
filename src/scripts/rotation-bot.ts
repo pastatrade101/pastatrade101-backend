@@ -9,10 +9,13 @@
  *   npm run bot:rotation -- --reset                    testnet: forget the testnet ledger
  *   options: --style steady|balanced|bold (first run; default balanced)
  *
- *   npm run bot:rotation -- --follow --budget 1000     testnet: copy the Rotation Index (Balanced) instead
- *   npm run bot:rotation -- --follow                   on an existing ledger: switch it to copying the index
- *   npm run bot:rotation -- --follow=rotation-balanced-switch   testnet: copy Balanced + BTC switch instead
- *                                                     (a testnet sleeve may move between indexes; a live one never does)
+ *   npm run bot:rotation -- --follow --budget 1000     testnet: copy the index this mode follows instead
+ *                                                     (Balanced + BTC switch for both modes, see BOT_FOLLOWS in
+ *                                                     services/rotation-bot/live.ts)
+ *   npm run bot:rotation -- --follow                   on an existing ledger: switch it to copying that index
+ *   npm run bot:rotation -- --follow=rotation-balanced testnet: copy plain Balanced (no BTC switch) instead
+ *                                                     (a testnet sleeve may move between indexes; a live one only
+ *                                                     ever follows BOT_FOLLOWS.live, and moves to it on its next run)
  * Following, the sleeve holds exactly the coins the index holds: it sells what the
  * index sold and buys what it bought, once the index has saved the fill. The ledger
  * remembers it, so later runs follow without the flag.
@@ -46,6 +49,7 @@
 import '../config/env';
 import { BotStop } from '../services/rotation-bot/errors';
 import { STYLES, type StyleKey } from '../services/rotation-bot/planner';
+import { BOT_FOLLOWS } from '../services/rotation-bot/live';
 import { runBot, type BotRunOptions } from '../services/rotation-bot/runner';
 import { INDEXES, isIndexId } from '../services/rotation-index/rotationIndex.service';
 
@@ -55,6 +59,7 @@ const fail = (msg: string): never => {
 
 const parseArgs = (argv: string[]): BotRunOptions => {
   const a: BotRunOptions = { mode: 'testnet', dryRun: false, snapshot: false, force: false, yes: false, reset: false, caller: 'cli' };
+  let bareFollow = false;
   for (let i = 0; i < argv.length; i += 1) {
     const [flag, inline] = argv[i].split('=');
     const value = () => inline ?? argv[++i] ?? fail(`${flag} needs a value.`);
@@ -79,9 +84,9 @@ const parseArgs = (argv: string[]): BotRunOptions => {
     } else if (flag === '--investor') {
       a.investorId = value();
     } else if (flag === '--follow') {
-      // Bare --follow is the Balanced index; --follow=<id> names another one.
-      const v = inline ?? 'rotation-balanced';
-      a.follow = isIndexId(v) ? v : fail(`--follow: unknown index "${v}". Known: ${Object.keys(INDEXES).join(', ')}.`);
+      // Bare --follow is the index this mode follows (set once the mode is known); --follow=<id> names one.
+      if (inline === undefined) bareFollow = true;
+      else a.follow = isIndexId(inline) ? inline : fail(`--follow: unknown index "${inline}". Known: ${Object.keys(INDEXES).join(', ')}.`);
     } else if (flag === '--dry-run') a.dryRun = true;
     else if (flag === '--snapshot') a.snapshot = true;
     else if (flag === '--force') a.force = true;
@@ -89,6 +94,7 @@ const parseArgs = (argv: string[]): BotRunOptions => {
     else if (flag === '--reset') a.reset = true;
     else fail(`Unknown option ${flag}. See the comment at the top of src/scripts/rotation-bot.ts.`);
   }
+  if (bareFollow) a.follow = BOT_FOLLOWS[a.mode];
   return a;
 };
 
