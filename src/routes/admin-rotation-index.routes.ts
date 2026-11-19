@@ -3,6 +3,7 @@ import {
   adminBotFund,
   adminBotFundAddInvestor,
   adminBotFundEditInvestor,
+  adminBotFundLinkAccount,
   adminBotFundStart,
   adminBotLive,
   adminBotPreview,
@@ -29,6 +30,7 @@ router.get('/rotation-index/bot/:mode/fund', adminBotFund);
 router.post('/rotation-index/bot/:mode/fund/start', adminBotFundStart);
 router.post('/rotation-index/bot/:mode/fund/investors', adminBotFundAddInvestor);
 router.patch('/rotation-index/bot/:mode/fund/investors/:id', adminBotFundEditInvestor);
+router.put('/rotation-index/bot/:mode/fund/investors/:id/account', adminBotFundLinkAccount);
 router.get('/rotation-index/:id', adminRotationIndex);
 router.post('/rotation-index/update', adminStepRotationIndex);
 router.post('/rotation-index/:id/update', adminStepRotationIndex);

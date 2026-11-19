@@ -14,6 +14,7 @@ import { validate } from '../middleware/validate.middleware';
 import { cancelAttemptSchema, upgradeSchema } from '../schemas/membership.schema';
 
 import { getMyWhatsappPreference, updateMyWhatsappPreference } from '../controllers/whatsapp-optin.controller';
+import { getMyInvestmentLinked, getMyInvestments } from '../controllers/investment.controller';
 
 const router = Router();
 
@@ -32,5 +33,9 @@ router.post('/payment-attempts/cancel', validate({ body: cancelAttemptSchema }),
 // WhatsApp alerts — the member's own consent, with the number to reach them on.
 router.get('/whatsapp', getMyWhatsappPreference);
 router.put('/whatsapp', updateMyWhatsappPreference);
+
+// The member's own share of the rotation sleeve, when the admin has linked one (view only).
+router.get('/investments/linked', getMyInvestmentLinked);
+router.get('/investments', getMyInvestments);
 
 export default router;

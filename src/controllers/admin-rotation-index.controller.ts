@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { BotStop } from '../services/rotation-bot/errors';
-import { addBooksInvestor, editBooksInvestor, readFundView, startBooks } from '../services/rotation-bot/fund-books';
+import { addBooksInvestor, editBooksInvestor, linkBooksAccount, readFundView, startBooks } from '../services/rotation-bot/fund-books';
 import { BOT_FOLLOWS, readLiveWallet } from '../services/rotation-bot/live';
 import { runBot } from '../services/rotation-bot/runner';
 import { readBotSnapshots } from '../services/rotation-bot/snapshot';
@@ -148,4 +148,15 @@ export const adminBotFundAddInvestor = asyncHandler(async (req: Request, res: Re
 export const adminBotFundEditInvestor = asyncHandler(async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   return books(res, 'Investor updated.', () => editBooksInvestor(botMode(req), String(req.params.id), { name: text(body.name), note: text(body.note) }));
+});
+
+// PUT /api/v1/admin/rotation-index/bot/:mode/fund/investors/:id/account { userId | null } — let a site account
+// see this person's share (view only on their own page), or take that away. Writes the books only.
+export const adminBotFundLinkAccount = asyncHandler(async (req: Request, res: Response) => {
+  const mode = botMode(req);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const userId = body.userId == null || body.userId === '' ? null : text(body.userId);
+  if (body.userId != null && body.userId !== '' && !userId) throw new AppError('userId must be a string or null.', 400);
+  console.log(`[rotation-bot] ${mode} investor ${String(req.params.id)} ${userId ? `linked to account ${userId}` : 'unlinked'} by user ${req.user?.sub ?? 'unknown'}`);
+  return books(res, userId ? 'Account linked.' : 'Account unlinked.', () => linkBooksAccount(mode, String(req.params.id), userId ?? null));
 });

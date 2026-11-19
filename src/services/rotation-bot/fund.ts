@@ -28,6 +28,10 @@ export interface FundInvestor {
   note: string;
   createdAt: string;
   owner: boolean;
+  /** The site account that may look at this share (view only). */
+  userId?: string;
+  /** That account's email when it was linked, for the admin page. */
+  userEmail?: string;
 }
 
 export interface FundEntry {
@@ -177,6 +181,27 @@ export const editInvestor = (f: Fund, id: string, o: { name?: string; note?: str
   }
   if (o.note !== undefined) inv.note = String(o.note).trim().slice(0, 200);
   return inv;
+};
+
+/** Let a site account see this person's share (view only), or take that away (`user` null). One account per person. */
+export const linkInvestorAccount = (f: Fund, id: string, user: { id: string; email: string } | null): FundInvestor => {
+  const inv = needInvestor(f, id);
+  if (!user) {
+    delete inv.userId;
+    delete inv.userEmail;
+    return inv;
+  }
+  const other = Object.values(f.investors).find((i) => i.id !== id && i.userId === user.id);
+  if (other) fail(`${user.email} is already linked to ${other.name}.`);
+  inv.userId = user.id;
+  inv.userEmail = user.email;
+  return inv;
+};
+
+/** One person's units at the end of a UTC day (YYYY-MM-DD). */
+export const investorUnitsAtEndOf = (f: Fund, id: string, date: string): number => {
+  const end = `${date}T23:59:59.999Z`;
+  return r8(f.entries.reduce((s, e) => (e.investorId === id && e.at <= end ? s + e.units : s), 0));
 };
 
 /**

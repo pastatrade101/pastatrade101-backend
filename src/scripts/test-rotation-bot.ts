@@ -5,7 +5,7 @@
  */
 import { decide } from '../services/rotation-backtest/engine';
 import type { OrderResult } from '../services/rotation-bot/binance';
-import { addInvestor, checkFund, editInvestor, investorUnits, openDeposit, recordWithdrawal, settleDeposit, sleeveValue, startFund, summarizeFund, unitPriceOf, unitsAtEndOf } from '../services/rotation-bot/fund';
+import { addInvestor, checkFund, editInvestor, investorUnits, investorUnitsAtEndOf, linkInvestorAccount, openDeposit, recordWithdrawal, settleDeposit, sleeveValue, startFund, summarizeFund, unitPriceOf, unitsAtEndOf } from '../services/rotation-bot/fund';
 import { applyBuy, applySell, newLedger, reconcile } from '../services/rotation-bot/ledger';
 import { buyAmounts, pickUniverse, planFollow, planReview, reviewStatus, STYLES, topUpBuys } from '../services/rotation-bot/planner';
 import { buildSnapshot } from '../services/rotation-bot/snapshot';
@@ -324,6 +324,21 @@ console.log('investor books (units)');
   check('rejoin: "since joined" restarts from the new money in', asha.firstAt === '2026-11-20T00:00:00Z' && near(asha.sinceJoinedPct, 10, 1e-6), JSON.stringify(asha));
   check('rejoin: put in and taken out count every dollar', near(asha.putInUsdt, 70, 1e-9) && near(asha.takenOutUsdt, 100, 1e-9) && near(asha.gainUsdt, 22 + 100 - 70, 1e-6));
   check('rejoin: the books add up', checkFund(f3).length === 0, checkFund(f3).join(' | '));
+  check('units by day: before, during and after their money', investorUnitsAtEndOf(f3, 'asha', '2026-11-01') === 0 && near(investorUnitsAtEndOf(f3, 'asha', '2026-11-02'), 50, 1e-9) && investorUnitsAtEndOf(f3, 'asha', '2026-11-10') === 0 && near(investorUnitsAtEndOf(f3, 'asha', '2026-11-20'), 10, 1e-9));
+
+  // Site accounts: one account per person, and unlinking clears it.
+  linkInvestorAccount(f3, 'asha', { id: 'u1', email: 'asha@example.com' });
+  check('account: linked', f3.investors.asha.userId === 'u1' && f3.investors.asha.userEmail === 'asha@example.com');
+  let twice = '';
+  try {
+    linkInvestorAccount(f3, 'owner', { id: 'u1', email: 'asha@example.com' });
+  } catch (e) {
+    twice = e instanceof Error ? e.message : String(e);
+  }
+  check('account: one account cannot see two shares', twice.includes('already linked to Asha') && !f3.investors.owner.userId, twice);
+  linkInvestorAccount(f3, 'asha', null);
+  check('account: unlinked', f3.investors.asha.userId === undefined && f3.investors.asha.userEmail === undefined);
+  check('account: linking leaves the money alone', checkFund(f3).length === 0);
 
   // A deposit whose value change looks wrong keeps the plain units instead of guessing.
   const l2 = newLedger('testnet', 'balanced', 10);
