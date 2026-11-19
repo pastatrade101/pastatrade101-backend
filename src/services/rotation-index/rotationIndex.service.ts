@@ -1,12 +1,11 @@
 import { supabase } from '../../config/supabase';
 import { rankAt } from '../rotation-backtest/engine';
-import type { PriceMatrix } from '../rotation-backtest/rotationData.service';
+import { loadPriceMatrix, type PriceMatrix } from '../rotation-backtest/rotationData.service';
 import { createBinance } from '../rotation-bot/binance';
 import { addDays, pickUniverse, STYLES } from '../rotation-bot/planner';
 import { isTradablePair, rulesFor, type SymbolRules } from '../rotation-bot/sizing';
 import { readSeries, readSeriesFull } from '../series/store';
 import { newIndexState, stepDay, type IndexConfig, type IndexState, type PendingReview, type ReviewRecord, type Trade } from './indexEngine';
-import { INDEX_EXTRAS, isIndexExtra, loadIndexMatrix } from './extras';
 
 // Runs the Rotation Index forward over the SAVED daily prices and stores one row per
 // day in rotation_index_days (see indexEngine.ts for the rules). Stepped after every
@@ -115,7 +114,7 @@ export const stepRotationIndex = async (
   const { config } = INDEXES[id];
   const style = config.style;
   const warnings: string[] = [];
-  const m = matrix ?? (await loadIndexMatrix());
+  const m = matrix ?? (await loadPriceMatrix());
   const dates = m.dates;
   const newestFinal = dates.length - 2;
   let toIdx = -1;
@@ -145,9 +144,6 @@ export const stepRotationIndex = async (
     warnings.push(`Binance unreachable — using the tradable-coin list saved on ${tradable.asOf}.`);
   }
   const tradableIds = tradable.ids.filter((c) => m.prices[c]);
-  // Coins go through the top-20 size cut; the stock tokens have no market cap and join every review as they are.
-  const coinIds = tradableIds.filter((c) => !isIndexExtra(c));
-  const extraIds = tradableIds.filter(isIndexExtra);
 
   // Holdings that left the Lab's coin list still need prices.
   const extra = new Map<string, Map<string, number>>();
@@ -167,10 +163,10 @@ export const stepRotationIndex = async (
     }
     return caps.get(coin)!;
   };
-  await Promise.all(coinIds.map(capOf));
+  await Promise.all(tradableIds.map(capOf));
   const rank = new Map(m.coins.map((c) => [c.id, c.rank]));
   const bySize = (i: number) =>
-    coinIds
+    tradableIds
       .map((coin) => ({ coin, marketCap: caps.get(coin)?.get(dates[i]) ?? 0 }))
       .sort((a, b) => b.marketCap - a.marketCap || (rank.get(a.coin) ?? 999) - (rank.get(b.coin) ?? 999));
 
@@ -181,7 +177,7 @@ export const stepRotationIndex = async (
       {
         date: dates[i],
         price: (coin) => priceAt(coin, i),
-        universe: () => [...bySize(i).slice(0, style.universeSize).map((x) => x.coin), ...extraIds.filter((c) => priceAt(c, i) != null)],
+        universe: () => bySize(i).slice(0, style.universeSize).map((x) => x.coin),
         ranking: (universe) => {
           const sub: Record<string, (number | null)[]> = {};
           for (const c of universe) sub[c] = m.prices[c];
@@ -294,9 +290,7 @@ const indexMeta = (id: IndexId) => {
     fee_pct: config.feePct,
     base: config.base,
     top10_size: config.top10Size,
-    top10_rebalance_days: config.top10RebalanceDays,
-    /** Stock tokens that join every review next to the top coins. */
-    extras: INDEX_EXTRAS.map((x) => ({ symbol: x.symbol, name: x.name }))
+    top10_rebalance_days: config.top10RebalanceDays
   };
 };
 
@@ -310,7 +304,7 @@ export const getRotationIndexView = async (id: IndexId) => {
     throw error;
   }
   if (!rows.length) return { index: indexMeta(id), started: false as const, table_missing: false };
-  return buildIndexView(id, rows, await loadIndexMatrix());
+  return buildIndexView(id, rows, await loadPriceMatrix());
 };
 
 /** The page's data from saved day rows (also used to preview a dry-run replay). */

@@ -6,7 +6,6 @@ import { coingeckoThrottleMs, getMarketChart, type CgMarketChart } from '../sour
 import { upsertSeries, type SeriesRow } from '../series/store';
 import { syncAltBtcSignals } from './sync-altbtc-signals';
 import { stepRotationIndexes } from '../rotation-index/rotationIndex.service';
-import { syncIndexExtras } from '../rotation-index/extras';
 
 
 // Always include BTC + the Lab baskets so default selections always have data,
@@ -92,14 +91,6 @@ export const syncPriceSeries = async (): Promise<number> => {
       console.warn(`Price-series sync skipped ${id}: ${error instanceof Error ? error.message : error}`);
     }
     await sleep(coingeckoThrottleMs);
-  }
-
-  // 4) The stock tokens the Rotation Index may hold (Binance daily prices, public data).
-  //    Non-fatal: the index then values them at their last saved price.
-  try {
-    console.log(`[price-series] index stock tokens: ${(await syncIndexExtras()).join(' · ')}`);
-  } catch (error) {
-    console.warn(`[price-series] index stock tokens skipped: ${error instanceof Error ? error.message : error}`);
   }
 
   // Drop in-memory caches so the signal pass + Labs read the fresh series.
