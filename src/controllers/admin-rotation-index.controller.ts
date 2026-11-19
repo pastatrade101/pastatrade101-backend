@@ -104,7 +104,7 @@ const runForAdmin = async (req: Request, res: Response, kind: 'preview' | 'run')
   if (kind === 'run') console.log(`[rotation-bot] ${mode} ${what} started from the admin page by user ${who}`);
   try {
     const outcome = await runBot(
-      { mode, follow: BOT_FOLLOWS, budget, dryRun: kind === 'preview', yes: kind === 'run' && confirmed, caller: 'admin', expect, topUp, withdraw, investorId },
+      { mode, follow: BOT_FOLLOWS[mode], budget, dryRun: kind === 'preview', yes: kind === 'run' && confirmed, caller: 'admin', expect, topUp, withdraw, investorId },
       (line) => {
         log.push(line);
         if (kind === 'run') console.log(`[rotation-bot ${mode}] ${line}`);

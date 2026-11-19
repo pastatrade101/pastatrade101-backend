@@ -1,6 +1,7 @@
 import { AppError } from '../../utils/api-response';
-import { runRotation, type FilterKind, type SignalKind } from './engine';
-import { loadPriceMatrix, type UniverseCoin } from './rotationData.service';
+import { runRotation, type EngineParams, type FilterKind, type Metrics, type SignalKind } from './engine';
+import { binanceTradableIds } from '../rotation-index/rotationIndex.service';
+import { loadCapMatrix, loadPriceMatrix, type PriceMatrix, type UniverseCoin } from './rotationData.service';
 
 // Rotation Backtest Lab — picks the universe and test window, runs the engine and
 // shapes a compact response. Results are educational backtests on saved daily
@@ -53,6 +54,103 @@ const DISCLAIMER =
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const r2n = (v: number | null) => (v == null ? null : r2(v));
+
+const roundMetrics = (x: Metrics) => ({
+  final_equity: r2(x.finalEquity),
+  total_return_pct: r2(x.totalReturnPct),
+  cagr_pct: r2n(x.cagrPct),
+  max_drawdown_pct: r2(x.maxDrawdownPct),
+  volatility_pct: r2(x.volatilityPct),
+  sharpe: r2n(x.sharpe),
+  sortino: r2n(x.sortino)
+});
+
+/** A missing day's market cap falls back to the last one saved this many days before. */
+const CAP_CARRY_DAYS = 7;
+
+/**
+ * The hindsight check: the same rule over the days with saved market caps, run twice —
+ * on the Lab's list (today's top N, used for every past day) and on each review's own
+ * top N by THAT day's market cap, which is all anyone could have known then. The gap
+ * between the two is what knowing today's winners adds. Top-N lists only.
+ */
+const realtimeCheck = async (m: PriceMatrix, p: RunParams, universe: UniverseCoin[], startIdx: number, endIdx: number, params: EngineParams) => {
+  if (p.universe === 'custom' || p.universe === 'all') {
+    return { check: null, note: 'The real-time check needs a top-10, 20, 30 or 50 list: a custom list or every coin has no “top coins on that day” to compare with.' };
+  }
+  const size = UNIVERSE_SIZE[p.universe];
+  const caps = await loadCapMatrix();
+  const capAt = (coin: string, t: number) => {
+    const row = caps[coin];
+    if (!row) return 0;
+    for (let k = t; k >= Math.max(0, t - CAP_CARRY_DAYS); k -= 1) if (row[k] != null) return row[k]!;
+    return 0;
+  };
+  const withCaps = (t: number) => m.coins.reduce((n, c) => n + (caps[c.id]?.[t] != null ? 1 : 0), 0);
+  let firstCap = -1;
+  for (let t = 0; t < m.dates.length; t += 1) if (withCaps(t) >= size) { firstCap = t; break; }
+  if (firstCap < 0) return { check: null, note: 'No saved market caps yet, so there is nothing to check against.' };
+  const from = Math.max(startIdx, firstCap, p.lookback_days);
+  if (endIdx - from < 14) {
+    return { check: null, note: `Saved market caps start ${m.dates[firstCap]}. The real-time check needs the test to run at least 15 days past that.` };
+  }
+
+  const cut = endIdx + 1;
+  const dates = m.dates.slice(0, cut);
+  const btc = m.prices.bitcoin!.slice(0, cut);
+  const all: Record<string, (number | null)[]> = {};
+  for (const c of m.coins) all[c.id] = m.prices[c.id].slice(0, cut);
+  const listed: Record<string, (number | null)[]> = {};
+  for (const c of universe) listed[c.id] = all[c.id];
+  const topOn = (coins: UniverseCoin[]) => (t: number) =>
+    coins
+      .map((c) => ({ id: c.id, cap: capAt(c.id, t), rank: c.rank }))
+      .filter((x) => x.cap > 0)
+      .sort((a, b) => b.cap - a.cap || a.rank - b.rank)
+      .slice(0, size)
+      .map((x) => x.id);
+
+  const hindsight = runRotation({ dates, prices: listed, btc, startIndex: from, params });
+  const live = runRotation({ dates, prices: all, btc, startIndex: from, params, universeAt: topOn(m.coins) });
+  // The same, from coins Binance trades against USDT only — the Rotation Index's list.
+  let tradable: Set<string> | null = null;
+  let binanceNote: string | null = null;
+  try {
+    tradable = new Set(await binanceTradableIds());
+  } catch (error) {
+    binanceNote = `Binance could not be reached for its coin list: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const onBinance = tradable ? m.coins.filter((c) => tradable!.has(c.id)) : [];
+  const binance = tradable && onBinance.length >= p.top_n
+    ? runRotation({ dates, prices: all, btc, startIndex: from, params, universeAt: topOn(onBinance) })
+    : null;
+  const symbol = new Map(m.coins.map((c) => [c.id, c.symbol]));
+  const sym = (id: string) => symbol.get(id) ?? id;
+  const inList = new Set(universe.map((c) => c.id));
+  const offList = [...new Set(live.trades.map((t) => t.coin))].filter((c) => !inList.has(c));
+
+  return {
+    check: {
+      start: live.dates[0],
+      end: live.dates[live.dates.length - 1],
+      days: live.dates.length - 1,
+      caps_from: m.dates[firstCap],
+      top_n: size,
+      hindsight: roundMetrics(hindsight.metrics.strategy),
+      realtime: roundMetrics(live.metrics.strategy),
+      binance: binance ? roundMetrics(binance.metrics.strategy) : null,
+      binance_note: binanceNote,
+      btc: roundMetrics(live.metrics.btc),
+      /** Coins the real-time run traded that are not in today's list (they shrank or fell away since). */
+      off_list: offList.map(sym),
+      /** Coins in today's list that Binance does not trade against USDT. */
+      not_on_binance: tradable ? universe.filter((c) => !tradable!.has(c.id)).map((c) => c.symbol) : [],
+      realtime_holdings: live.finalHoldings.map((h) => sym(h.coin)),
+      binance_holdings: binance ? binance.finalHoldings.map((h) => sym(h.coin)) : []
+    },
+    note: null
+  };
+};
 
 const pickUniverse = (coins: UniverseCoin[], p: RunParams): UniverseCoin[] => {
   if (p.universe === 'custom') {
@@ -117,22 +215,22 @@ export const runRotationBacktest = async (p: RunParams) => {
   const prices: Record<string, (number | null)[]> = {};
   for (const c of universe) prices[c.id] = m.prices[c.id].slice(0, cut);
 
-  const result = runRotation({
-    dates: m.dates.slice(0, cut),
-    prices,
-    btc: btcAll.slice(0, cut),
-    startIndex: startIdx,
-    params: {
-      signal: p.signal,
-      filter: p.filter,
-      lookbackDays: p.lookback_days,
-      topN: p.top_n,
-      worstRankHeld: p.worst_rank_held,
-      rebalanceDays: p.rebalance_days,
-      feePct: p.fee_pct,
-      initialCash: p.initial_cash
-    }
-  });
+  const params: EngineParams = {
+    signal: p.signal,
+    filter: p.filter,
+    lookbackDays: p.lookback_days,
+    topN: p.top_n,
+    worstRankHeld: p.worst_rank_held,
+    rebalanceDays: p.rebalance_days,
+    feePct: p.fee_pct,
+    initialCash: p.initial_cash
+  };
+  const result = runRotation({ dates: m.dates.slice(0, cut), prices, btc: btcAll.slice(0, cut), startIndex: startIdx, params });
+  // The check is extra: if the market caps can't be read, the backtest still answers.
+  const realtime = await realtimeCheck(m, p, universe, startIdx, endIdx, params).catch((error: unknown) => ({
+    check: null,
+    note: `The real-time check could not run: ${error instanceof Error ? error.message : String(error)}`
+  }));
 
   const byId = new Map(universe.map((c) => [c.id, c]));
   const sym = (id: string) => byId.get(id)?.symbol ?? id;
@@ -144,15 +242,6 @@ export const runRotationBacktest = async (p: RunParams) => {
     );
   }
 
-  const roundMetrics = (x: typeof result.metrics.strategy) => ({
-    final_equity: r2(x.finalEquity),
-    total_return_pct: r2(x.totalReturnPct),
-    cagr_pct: r2n(x.cagrPct),
-    max_drawdown_pct: r2(x.maxDrawdownPct),
-    volatility_pct: r2(x.volatilityPct),
-    sharpe: r2n(x.sharpe),
-    sortino: r2n(x.sortino)
-  });
   const s = result.stats;
 
   return {
@@ -168,6 +257,8 @@ export const runRotationBacktest = async (p: RunParams) => {
       drawdown_btc: result.drawdownPct.btc.map(r2)
     },
     metrics: { strategy: roundMetrics(result.metrics.strategy), btc: roundMetrics(result.metrics.btc) },
+    realtime: realtime.check,
+    realtime_note: realtime.note,
     stats: {
       trades: s.trades,
       win_rate_pct: r2n(s.winRatePct),
@@ -248,7 +339,7 @@ export const runRotationBacktest = async (p: RunParams) => {
       `Equal weight per slot at entry (1/${p.top_n} of equity); holdings drift between rebalances.`,
       ...(p.filter === 'none' ? [] : [`Filter: ${FILTERS[p.filter]}. Cash earns nothing.`]),
       `A ${p.fee_pct}% fee is charged on every buy and sell. Slippage and spreads are not modelled.`,
-      'The universe is today’s top coins by market cap, so coins that collapsed and left the list are missing (survivorship bias). This makes results look better than they would have been in real time.',
+      'The universe is today’s top coins by market cap, so coins that collapsed and left the list are missing (survivorship bias). This makes results look better than they would have been in real time. The real-time check picks each review’s top coins by that day’s market cap instead.',
       'Every position is closed on the final day so the trade statistics are complete.',
       'BTC benchmark: buy on the strategy’s first trading day, hold, sell on the final day, same fee.'
     ],

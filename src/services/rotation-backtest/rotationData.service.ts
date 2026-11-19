@@ -1,7 +1,7 @@
 import { supabase } from '../../config/supabase';
 import { isGoldToken, isNonCryptoBeta } from '../../utils/asset-class';
 import { cached } from '../../utils/cache';
-import { readSeries } from '../series/store';
+import { readSeries, readSeriesFull } from '../series/store';
 import { prehistoryKey, withPrehistory } from './prehistory';
 
 // Reads the SAVED daily closes (daily_prices 'cg:<id>', filled by sync:prices, preceded
@@ -154,6 +154,32 @@ export const loadPriceMatrix = (): Promise<PriceMatrix> =>
       }
       const coingeckoFrom = cgFrom && dates[0] < cgFrom ? cgFrom : null;
       return { dates, prices, coins, coingeckoFrom };
+    },
+    1800
+  );
+
+/**
+ * Each matrix coin's saved market cap per day (CoinGecko rows only, so it starts with
+ * the CoinGecko history), aligned to the matrix dates; null where none was saved.
+ * Lets a backtest pick each day's biggest coins as they were that day. Cached 30 min.
+ */
+export const loadCapMatrix = (): Promise<Record<string, (number | null)[]>> =>
+  cached(
+    'rotation:caps',
+    async () => {
+      const m = await loadPriceMatrix();
+      const index = new Map(m.dates.map((d, i) => [d, i]));
+      const caps: Record<string, (number | null)[]> = {};
+      await mapLimit(m.coins, CONCURRENCY, async (c) => {
+        const row: (number | null)[] = new Array(m.dates.length).fill(null);
+        for (const r of await readSeriesFull(`cg:${c.id}`)) {
+          const i = index.get(r.date);
+          const cap = r.market_cap == null ? NaN : Number(r.market_cap);
+          if (i !== undefined && cap > 0) row[i] = cap;
+        }
+        caps[c.id] = row;
+      });
+      return caps;
     },
     1800
   );

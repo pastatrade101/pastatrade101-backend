@@ -56,6 +56,11 @@ export interface EngineInput {
   /** First bar of the test window. Bars before it are warm-up for the score. */
   startIndex: number;
   params: EngineParams;
+  /**
+   * The coins a review on bar t may rank (e.g. that day's top 20 by market cap).
+   * Without it every coin in `prices` is ranked on every review.
+   */
+  universeAt?: (t: number) => string[];
 }
 
 export interface Trade {
@@ -304,6 +309,13 @@ export const runRotation = (input: EngineInput): EngineResult => {
   if (btc.length !== dates.length) throw new Error('BTC series is not aligned to dates.');
 
   const fee = P.feePct / 100;
+  const rankFor = (t: number): RankRow[] => {
+    const ids = input.universeAt?.(t);
+    if (!ids) return rankAt(input, P.signal, P.lookbackDays, t, P.filter);
+    const sub: Record<string, (number | null)[]> = {};
+    for (const coin of ids) if (prices[coin]) sub[coin] = prices[coin];
+    return rankAt({ prices: sub, btc }, P.signal, P.lookbackDays, t, P.filter);
+  };
   const lastPrice = new Map<string, number>();
   const positions = new Map<string, Position>();
   const pendingSells = new Map<string, ExitReason>();
@@ -317,7 +329,7 @@ export const runRotation = (input: EngineInput): EngineResult => {
   const equity: number[] = [];
   let finalHoldings: OpenPosition[] = [];
   let lastReviewIndex = -1;
-  const finalRanking = rankAt(input, P.signal, P.lookbackDays, end, P.filter);
+  const finalRanking = rankFor(end);
   let plan: RulePlan | null = null;
 
   const equityNow = (): number => {
@@ -425,7 +437,7 @@ export const runRotation = (input: EngineInput): EngineResult => {
     if (t < end && (t - s) % P.rebalanceDays === 0) {
       rebalances += 1;
       lastReviewIndex = t;
-      const review = decide([...positions.keys()], rankAt(input, P.signal, P.lookbackDays, t, P.filter), P);
+      const review = decide([...positions.keys()], rankFor(t), P);
       pendingSells.clear();
       for (const [coin, reason] of review.drops) pendingSells.set(coin, reason);
       pendingBuys = review.adds;

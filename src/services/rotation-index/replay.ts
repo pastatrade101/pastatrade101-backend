@@ -113,8 +113,7 @@ export const replayRotationIndex = (id: IndexId, from: string, to: string, btcTr
           days: btcTrendDays,
           latest: { return_pct: w.latest.return_pct, max_drawdown_pct: w.latest.max_drawdown_pct },
           holdings: w.holdings,
-          // An empty ranking is the switch at work: BTC was below its average that day.
-          changes: w.reviews.filter((r) => r.adds.length || r.sells.length).map((r) => ({ ...r, btc_below: r.ranking.length === 0 })),
+          changes: w.reviews.filter((r) => r.adds.length || r.sells.length).map((r) => ({ ...r, btc_below: r.risk_off })),
           cash_days: cashRanges.reduce((n, c) => n + (Date.parse(c.to) - Date.parse(c.from)) / DAY + 1, 0),
           measured_days: rows.length - 1,
           cash_ranges: cashRanges

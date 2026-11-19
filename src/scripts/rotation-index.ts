@@ -2,8 +2,9 @@
  * Rotation Index — start it, or add the days since the last saved one.
  *
  *   npm run index:rotation -- --start       create it on the newest final day (once)
+ *   npm run index:rotation -- --start --start-on YYYY-MM-DD   create it on a past final day (once)
  *   npm run index:rotation                  add any final days not saved yet
- *   options: --dry-run (compute and print, write nothing)   --id rotation-balanced
+ *   options: --dry-run (compute and print, write nothing)   --id rotation-balanced | rotation-balanced-switch
  *            --from YYYY-MM-DD with --dry-run: replay from a past date (a check, never saved)
  *
  * The price sync does the daily step on its own once the index exists.
@@ -18,10 +19,11 @@ const id = arg('id') ?? 'rotation-balanced';
 const start = process.argv.includes('--start');
 const dryRun = process.argv.includes('--dry-run');
 const from = arg('from'); // dry runs only: replay from a past date
+const startOn = arg('start-on');
 
 (async () => {
   if (!isIndexId(id)) throw new Error(`Unknown index: ${id}`);
-  const r = await stepRotationIndex(id, { start: start || Boolean(from), dryRun, from });
+  const r = await stepRotationIndex(id, { start: start || Boolean(from), dryRun, from, startOn });
   for (const w of r.warnings) console.log(`! ${w}`);
   if (!r.added) {
     console.log(r.note === 'not started' ? `${id} has not been started — run with --start.` : `${id} is up to date.`);

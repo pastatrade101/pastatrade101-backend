@@ -11,6 +11,8 @@
  *
  *   npm run bot:rotation -- --follow --budget 1000     testnet: copy the Rotation Index (Balanced) instead
  *   npm run bot:rotation -- --follow                   on an existing ledger: switch it to copying the index
+ *   npm run bot:rotation -- --follow=rotation-balanced-switch   testnet: copy Balanced + BTC switch instead
+ *                                                     (a testnet sleeve may move between indexes; a live one never does)
  * Following, the sleeve holds exactly the coins the index holds: it sells what the
  * index sold and buys what it bought, once the index has saved the fill. The ledger
  * remembers it, so later runs follow without the flag.

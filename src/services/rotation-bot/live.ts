@@ -1,4 +1,4 @@
-import { readIndexLineUp } from '../rotation-index/rotationIndex.service';
+import { readIndexLineUp, type IndexId } from '../rotation-index/rotationIndex.service';
 import { BinanceError, createBinance, type ApiRestrictions, type BinanceClient } from './binance';
 import { botKeys, hasBotKeys, maxBudgetUsdt, whyCannotTrade } from './config';
 import { newLedger } from './ledger';
@@ -9,8 +9,11 @@ import { isLedgerLocked, LEDGER_TABLE_MISSING, openLedgerStore, type BotMode } f
 // from Binance on request with this server's key (read-only calls — nothing here
 // can place an order), plus what the bot's ledger says the sleeve owns.
 
-/** The index the admin page's buttons follow. */
-export const BOT_FOLLOWS = 'rotation-balanced' as const;
+/**
+ * The index each sleeve follows from the admin page. Live stays on Balanced; testnet
+ * tries Balanced + BTC switch first. Moving live to another index is the owner's call.
+ */
+export const BOT_FOLLOWS: Record<BotMode, IndexId> = { live: 'rotation-balanced', testnet: 'rotation-balanced-switch' };
 
 /** Polls within this window share one Binance read. */
 const FRESH_MS = 4_000;
@@ -70,7 +73,7 @@ const read = async (mode: BotMode, fresh: boolean): Promise<LiveWallet> => {
   const [ledger, running, lineUp] = await Promise.all([
     store.load(),
     inDb ? isLedgerLocked(mode) : Promise.resolve(false),
-    readIndexLineUp(BOT_FOLLOWS).catch(() => null)
+    readIndexLineUp(BOT_FOLLOWS[mode]).catch(() => null)
   ]);
   const out: LiveWallet = {
     mode,
@@ -94,7 +97,7 @@ const read = async (mode: BotMode, fresh: boolean): Promise<LiveWallet> => {
     const [prices, balances, r] = await Promise.all([bn.prices(), bn.balances(), mode === 'live' ? restrictions(bn, mode, fresh) : Promise.resolve(null)]);
     if (r) out.key = { withdrawals: r.enableWithdrawals, ip_restricted: r.ipRestrict, spot_trading: r.enableSpotAndMarginTrading };
     // Before the first run there is no ledger: show the sleeve the first run would start.
-    const L = ledger ?? { ...newLedger(mode, 'balanced', mode === 'live' ? maxBudgetUsdt() : 1000), follow: BOT_FOLLOWS };
+    const L = ledger ?? { ...newLedger(mode, 'balanced', mode === 'live' ? maxBudgetUsdt() : 1000), follow: BOT_FOLLOWS[mode] };
     out.snapshot = buildSnapshot({
       ledger: L,
       started: !!ledger,

@@ -46,6 +46,21 @@ console.log('scores');
   check('ranks best first, id breaks ties', ranks.map((r) => r.coin).join(',') === 'c,a,b', ranks.map((r) => r.coin).join(','));
 }
 
+console.log('universe per review (the real-time check)');
+{
+  // d is strongest, but it only joins the list from bar 40 on (it grew into it).
+  const prices = { a: growth(0.001), b: growth(0.002), c: growth(0.003), d: growth(0.004), bitcoin: growth(0.001) };
+  const universeAt = (t: number) => (t < 40 ? ['a', 'b', 'c'] : ['a', 'b', 'c', 'd']);
+  // No hold band beyond the 2 slots, so a stronger coin replaces b as soon as it is listed.
+  const r = runRotation({ ...make(prices, { worstRankHeld: 2 }), universeAt });
+  check('before d joins, the rule holds the best of the list that day', r.events[0]?.bought.slice().sort().join(',') === 'b,c', r.events[0]?.bought.join(','));
+  const dIn = r.events.find((e) => e.bought.includes('d'));
+  check('d is bought only after it joins the list', dIn?.date === dates[41], dIn?.date);
+  check('the final ranking uses the last day’s list', r.finalRanking.map((x) => x.coin).join(',') === 'd,c,b,a');
+  const hindsight = runRotation(make(prices));
+  check('without the per-review list, d is held from the start (hindsight)', hindsight.events[0]?.bought.includes('d') === true);
+}
+
 console.log('rotation mechanics');
 {
   // Fixed ordering: d > c > b > a. With topN = 2 it should hold c and d, nothing else.

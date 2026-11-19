@@ -19,6 +19,12 @@ export interface IndexConfig {
   base: number;
   top10Size: number;
   top10RebalanceDays: number;
+  /**
+   * The BTC switch: on a review day with BTC's close below its average over this many
+   * days, the review ranks nothing, so the index sells everything and holds cash until
+   * a review finds BTC back above. Unset = always invested.
+   */
+  btcTrendDays?: number;
 }
 
 export interface IndexHolding {
@@ -65,6 +71,8 @@ export interface ReviewRecord {
   sells: { coin: string; reason: DropReason }[];
   adds: string[];
   fillsOn: 'next day';
+  /** The BTC switch was on: BTC closed below its average, so the review ranked nothing. */
+  riskOff?: boolean;
 }
 
 export interface DayInput {
@@ -77,6 +85,8 @@ export interface DayInput {
   ranking: (universe: string[]) => RankRow[];
   /** Top coins by market cap on this date with their caps (asked for on reweighting days only). */
   top10: (size: number) => { coin: string; marketCap: number }[];
+  /** Review days only: true when the BTC switch says hold cash (see IndexConfig.btcTrendDays). */
+  riskOff?: () => boolean;
 }
 
 export interface DayResult {
@@ -155,7 +165,9 @@ export const stepDay = (prev: IndexState, day: DayInput, cfg: IndexConfig): DayR
       trades.push({ side: 'BUY', coin, price: p, units: notional / p, value: notional, fee: f, reason: 'new in the top' });
     }
     s.pending = waiting.length ? { ...s.pending, sells: waiting, adds: [] } : null;
-    if (!s.startedOn && trades.length) s.startedOn = day.date;
+    // The first review's fill day starts the index and its yardsticks, even when the
+    // review bought nothing (the BTC switch can start an index in cash).
+    if (!s.startedOn) s.startedOn = day.date;
   }
 
   // 2) The yardsticks start on the first fill day, at the same fee.
@@ -209,11 +221,14 @@ export const stepDay = (prev: IndexState, day: DayInput, cfg: IndexConfig): DayR
   let review: ReviewRecord | null = null;
   if (reviewStatus(s.lastReview, day.date, cfg.style.rebalanceDays).due) {
     const universe = day.universe();
-    const ranking = day.ranking(universe);
-    const plan = planReview(Object.keys(s.holdings), ranking, new Set(universe), cfg.style);
-    s.pending = plan.drops.length || plan.adds.length ? { decided: day.date, sells: plan.drops, adds: plan.adds } : null;
+    const riskOff = day.riskOff?.() ?? false;
+    const ranking = riskOff ? [] : day.ranking(universe);
+    const plan = planReview(Object.keys(s.holdings), ranking, new Set(universe), cfg.style, riskOff ? 'BTC below its average' : undefined);
+    // Before the index has started, the first review always queues a fill day (even an
+    // empty one), so the index starts the next day.
+    s.pending = plan.drops.length || plan.adds.length || !s.startedOn ? { decided: day.date, sells: plan.drops, adds: plan.adds } : null;
     s.lastReview = day.date;
-    review = { universe, ranking: ranking.slice(0, 10), keep: plan.keep, sells: plan.drops, adds: plan.adds, fillsOn: 'next day' };
+    review = { universe, ranking: ranking.slice(0, 10), keep: plan.keep, sells: plan.drops, adds: plan.adds, fillsOn: 'next day', ...(riskOff ? { riskOff } : {}) };
   }
 
   return { state: s, nav, btc, top10, trades, review, top10Trades };

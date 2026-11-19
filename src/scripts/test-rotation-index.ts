@@ -79,5 +79,28 @@ check('reweights 30 days after the start', d31.top10Trades.length > 0 && d31.sta
 const w = d31.state.top10.holdings;
 check('to the new market-cap weights', near(w.bitcoin * 110, w.a * 20, 1e-3), `${w.bitcoin * 110} vs ${w.a * 20}`);
 
+console.log('BTC switch');
+{
+  const off = (i: number, prices: Prices, riskOff: boolean): DayInput => ({ ...input(i, prices), riskOff: () => riskOff });
+  // Starts with BTC below its average: the first review ranks nothing.
+  const e0 = stepDay(newIndexState(100), off(0, flat, true), cfg);
+  check('a review with the switch on ranks nothing and buys nothing', e0.review!.riskOff === true && e0.review!.ranking.length === 0 && e0.review!.adds.length === 0);
+  check('…but still queues the first fill day', e0.state.pending?.decided === day(0) && e0.state.pending.adds.length === 0);
+  const e1 = stepDay(e0.state, off(1, flat, true), cfg);
+  check('the index starts in cash on that fill day, with its yardsticks', e1.state.startedOn === day(1) && e1.trades.length === 0 && e1.state.btcUnits != null && near(e1.nav, 100));
+  check('the empty fill day clears', e1.state.pending === null);
+  const e7 = stepDay(e1.state, off(7, flat, false), cfg);
+  check('BTC back above: the next review buys the top 3', e7.review!.adds.join() === 'a,b,c' && !e7.review!.riskOff);
+  const e8 = stepDay(e7.state, off(8, flat, false), cfg);
+  check('…filled the next day', Object.keys(e8.state.holdings).sort().join() === 'a,b,c');
+  const e14 = stepDay(e8.state, off(14, flat, true), cfg);
+  check('BTC below again: every holding is sold, with the reason', e14.review!.sells.length === 3 && e14.review!.sells.every((x) => x.reason === 'BTC below its average'));
+  const e15 = stepDay(e14.state, off(15, flat, true), cfg);
+  check('…and the index sits in cash', Object.keys(e15.state.holdings).length === 0 && e15.state.cash > 99);
+  // Without a riskOff input a review behaves as before.
+  const plain = stepDay(newIndexState(100), input(0, flat), cfg);
+  check('no switch input: the review ranks as usual', !plain.review!.riskOff && plain.review!.adds.join() === 'a,b,c');
+}
+
 console.log(failures ? `\n${failures} test(s) FAILED` : '\nAll rotation index tests passed.');
 process.exit(failures ? 1 : 0);

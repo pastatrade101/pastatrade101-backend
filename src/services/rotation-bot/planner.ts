@@ -113,14 +113,15 @@ export const rankUniverse = (
   return rankAt({ prices: sub, btc }, style.signal, style.lookbackDays, idx, style.filter);
 };
 
-export type DropReason = 'fell out of the hold band' | 'stopped passing the filter' | 'left the universe';
+export type DropReason = 'fell out of the hold band' | 'stopped passing the filter' | 'left the universe' | 'BTC below its average';
 
 /** One review: which holdings to sell (and why) and which coins fill the free slots. */
-export const planReview = (held: string[], ranking: RankRow[], universeIds: Set<string>, style: BotStyle) => {
+/** `reason` overrides why every drop happened (e.g. the BTC switch emptied the ranking). */
+export const planReview = (held: string[], ranking: RankRow[], universeIds: Set<string>, style: BotStyle, reason?: DropReason) => {
   const r = decide([...held].sort(), ranking, style);
   const drops = [...r.drops].map(([coin, kind]) => ({
     coin,
-    reason: (kind === 'rank'
+    reason: reason ?? (kind === 'rank'
       ? 'fell out of the hold band'
       : universeIds.has(coin)
         ? 'stopped passing the filter'

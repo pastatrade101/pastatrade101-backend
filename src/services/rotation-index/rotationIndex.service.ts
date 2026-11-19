@@ -5,6 +5,7 @@ import { createBinance } from '../rotation-bot/binance';
 import { addDays, pickUniverse, STYLES } from '../rotation-bot/planner';
 import { isTradablePair, rulesFor, type SymbolRules } from '../rotation-bot/sizing';
 import { readSeries, readSeriesFull } from '../series/store';
+import { cached } from '../../utils/cache';
 import { newIndexState, stepDay, type IndexConfig, type IndexState, type PendingReview, type ReviewRecord, type Trade } from './indexEngine';
 
 // Runs the Rotation Index forward over the SAVED daily prices and stores one row per
@@ -16,12 +17,19 @@ export const INDEXES = {
   'rotation-balanced': {
     label: 'Rotation Index · Balanced',
     config: { style: STYLES.balanced, feePct: 0.1, base: 100, top10Size: 10, top10RebalanceDays: 30 } satisfies IndexConfig
+  },
+  // The same rule plus the BTC switch: cash on review days when BTC closes below its
+  // 50-day average. Tracked next to Balanced; the testnet bot follows it.
+  'rotation-balanced-switch': {
+    label: 'Rotation Index · Balanced + BTC switch',
+    config: { style: STYLES.balanced, feePct: 0.1, base: 100, top10Size: 10, top10RebalanceDays: 30, btcTrendDays: 50 } satisfies IndexConfig
   }
 } as const;
 export type IndexId = keyof typeof INDEXES;
 export const isIndexId = (v: unknown): v is IndexId => typeof v === 'string' && v in INDEXES;
 
 const TABLE = 'rotation_index_days';
+const configOf = (id: IndexId): IndexConfig => INDEXES[id].config;
 
 /** Coins the rule may buy: in the Lab's list and tradable against USDT on Binance. */
 interface Tradable {
@@ -76,6 +84,10 @@ const fetchTradable = async (m: PriceMatrix): Promise<Tradable> => {
   return { asOf: new Date().toISOString().slice(0, 10), ids: picked.map((c) => c.id) };
 };
 
+/** Coin ids Binance trades against USDT (the Index's coin list), for the Lab's real-time check. Cached 6 h. */
+export const binanceTradableIds = (): Promise<string[]> =>
+  cached('rotation:binance-tradable', async () => (await fetchTradable(await loadPriceMatrix())).ids, 6 * 3600);
+
 export interface StepResult {
   id: IndexId;
   added: number;
@@ -99,23 +111,28 @@ export const stepRotationIndex = async (
     from,
     to,
     matrix,
-    btcTrendDays
+    btcTrendDays,
+    startOn
   }: {
     start?: boolean;
+    /** With `start`: create the index on this past final day instead of the newest (only while it has no rows). */
+    startOn?: string;
     dryRun?: boolean;
     from?: string;
     /** Dry runs only: stop after this date. */
     to?: string;
     /** Dry runs only: use these prices instead of the saved ones. */
     matrix?: PriceMatrix;
-    /** Dry runs only: on a review day with BTC below its N-day average, rank nothing (sell all, stay in cash). */
+    /** Dry runs only: try the BTC switch at this average length (overrides the index's own setting). */
     btcTrendDays?: number;
   } = {}
 ): Promise<StepResult> => {
   if ((matrix || to || btcTrendDays) && !dryRun) throw new Error('A price matrix, an end date or a BTC trend switch can only be passed to a dry run.');
   if (from && !dryRun) throw new Error('--from replays the past and is only allowed with --dry-run.');
-  const { config } = INDEXES[id];
+  if (startOn && (!start || from)) throw new Error('A start day is only used when starting an index.');
+  const config = configOf(id);
   const style = config.style;
+  const trendDays = btcTrendDays ?? config.btcTrendDays ?? 0;
   const warnings: string[] = [];
   const m = matrix ?? (await loadPriceMatrix());
   const dates = m.dates;
@@ -134,8 +151,15 @@ export const stepRotationIndex = async (
     warnings.push(MISSING_TABLE);
   }
   if (!last && !start) return { id, added: 0, from: null, to: null, note: 'not started', warnings };
+  if (startOn && last) throw new Error(`${INDEXES[id].label} has already started (saved to ${last.date}).`);
   if (from) last = null; // a dry-run replay from a past date starts fresh
-  const firstIdx = from ? dates.findIndex((d) => d >= from) : last ? dates.findIndex((d) => d > last!.date) : lastFinal;
+  const firstIdx = from
+    ? dates.findIndex((d) => d >= from)
+    : last
+      ? dates.findIndex((d) => d > last!.date)
+      : startOn
+        ? dates.findIndex((d) => d >= startOn)
+        : lastFinal;
   if (firstIdx < 0 || firstIdx > lastFinal) return { id, added: 0, from: null, to: null, note: 'up to date', warnings };
 
   let state: IndexState = last ? (({ tradable: _t, ...s }) => s)(last.state) : newIndexState(config.base);
@@ -175,14 +199,14 @@ export const stepRotationIndex = async (
 
   const btcCloses = m.prices.bitcoin ?? [];
   const btcBelowAverage = (i: number) => {
-    if (!btcTrendDays || i + 1 < btcTrendDays) return false;
+    if (!trendDays || i + 1 < trendDays) return false;
     let sum = 0;
-    for (let k = i - btcTrendDays + 1; k <= i; k += 1) {
+    for (let k = i - trendDays + 1; k <= i; k += 1) {
       const p = btcCloses[k];
       if (p == null) return false;
       sum += p;
     }
-    return (btcCloses[i] ?? Infinity) < sum / btcTrendDays;
+    return (btcCloses[i] ?? Infinity) < sum / trendDays;
   };
 
   const rows: DayRow[] = [];
@@ -193,8 +217,8 @@ export const stepRotationIndex = async (
         date: dates[i],
         price: (coin) => priceAt(coin, i),
         universe: () => bySize(i).slice(0, style.universeSize).map((x) => x.coin),
+        riskOff: () => btcBelowAverage(i),
         ranking: (universe) => {
-          if (btcBelowAverage(i)) return [];
           const sub: Record<string, (number | null)[]> = {};
           for (const c of universe) sub[c] = m.prices[c];
           return rankAt({ prices: sub, btc: m.prices.bitcoin }, style.signal, style.lookbackDays, i, style.filter);
@@ -272,7 +296,7 @@ export const readIndexLineUp = async (id: IndexId): Promise<IndexLineUp | null> 
     savedAt: row.created_at ?? null,
     nav,
     holdings,
-    pending: st.pending,
+    pending: hasOrders(st.pending) ? st.pending : null,
     lastReview: st.lastReview,
     nextReview: st.lastReview ? addDays(st.lastReview, INDEXES[id].config.style.rebalanceDays) : null
   };
@@ -286,6 +310,8 @@ export const stepRotationIndexes = async (): Promise<StepResult[]> => {
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+/** A review that queued orders (an index starting in cash queues an empty one). */
+const hasOrders = (p: PendingReview | null): p is PendingReview => !!p && (p.sells.length > 0 || p.adds.length > 0);
 const maxDrawdown = (values: number[]) => {
   let peak = -Infinity;
   let worst = 0;
@@ -297,11 +323,13 @@ const maxDrawdown = (values: number[]) => {
 };
 
 const indexMeta = (id: IndexId) => {
-  const { label, config } = INDEXES[id];
+  const { label } = INDEXES[id];
+  const config = configOf(id);
   const style = config.style;
   return {
     id,
     label,
+    btc_trend_days: config.btcTrendDays ?? null,
     style: { key: style.key, label: style.label, universe_size: style.universeSize, top_n: style.topN, worst_rank_held: style.worstRankHeld, rebalance_days: style.rebalanceDays, signal: style.signal, lookback_days: style.lookbackDays },
     fee_pct: config.feePct,
     base: config.base,
@@ -325,7 +353,7 @@ export const getRotationIndexView = async (id: IndexId) => {
 
 /** The page's data from saved day rows (also used to preview a dry-run replay). */
 export const buildIndexView = (id: IndexId, rows: DayRow[], m: PriceMatrix) => {
-  const { config } = INDEXES[id];
+  const config = configOf(id);
   const style = config.style;
   const meta = indexMeta(id);
   const coins = new Map(m.coins.map((c) => [c.id, c]));
@@ -365,6 +393,7 @@ export const buildIndexView = (id: IndexId, rows: DayRow[], m: PriceMatrix) => {
       keep: r.review!.keep.map(sym),
       sells: r.review!.sells.map((s) => ({ symbol: sym(s.coin), reason: s.reason })),
       adds: r.review!.adds.map(sym),
+      risk_off: !!r.review!.riskOff,
       ranking: r.review!.ranking.map((x) => ({ symbol: sym(x.coin), rank: x.rank, score: r2(x.score * 100) })),
       fills: r.review!.sells.length || r.review!.adds.length
         ? fills.map((t) => ({ side: t.side, symbol: sym(t.coin), price: t.price, value: r2(t.value), reason: t.reason }))
@@ -393,12 +422,30 @@ export const buildIndexView = (id: IndexId, rows: DayRow[], m: PriceMatrix) => {
     holdings,
     cash_pct: r2((st.cash / last.nav) * 100),
     top10,
-    pending: st.pending
+    pending: hasOrders(st.pending)
       ? { decided: st.pending.decided, sells: st.pending.sells.map((s) => ({ symbol: sym(s.coin), reason: s.reason })), adds: st.pending.adds.map(sym) }
       : null,
     last_review: st.lastReview,
     next_review: st.lastReview ? addDays(st.lastReview, style.rebalanceDays) : null,
     series: rows.map((r) => ({ date: r.date, nav: r2(r.nav), btc: r2(r.btc), top10: r2(r.top10) })),
-    reviews
+    reviews,
+    btc_switch: btcSwitchNow(config.btcTrendDays, m, last.date)
   };
+};
+
+/** Where BTC stands against the switch's average on a day: what the next review would see. */
+const btcSwitchNow = (days: number | undefined, m: PriceMatrix, date: string) => {
+  if (!days) return null;
+  const i = m.dates.indexOf(date);
+  const closes = m.prices.bitcoin ?? [];
+  if (i + 1 < days) return null;
+  let sum = 0;
+  for (let k = i - days + 1; k <= i; k += 1) {
+    const p = closes[k];
+    if (p == null) return null;
+    sum += p;
+  }
+  const btc = closes[i]!;
+  const average = sum / days;
+  return { days, date, btc: r2(btc), average: r2(average), gap_pct: r2((btc / average - 1) * 100), below: btc < average };
 };

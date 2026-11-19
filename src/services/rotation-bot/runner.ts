@@ -108,7 +108,9 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
     const followId = a.follow ?? ledger?.follow;
     const following: IndexId | undefined =
       followId === undefined ? undefined : isIndexId(followId) ? followId : fail(`This ledger follows "${followId}", which is not a known index.`);
-    if (ledger?.follow && a.follow && a.follow !== ledger.follow) fail(`This ${a.mode} ledger follows ${ledger.follow}, not ${a.follow}.`);
+    // Live money never changes index by itself; a testnet sleeve may switch (it sells
+    // what the new index doesn't hold and buys what it does).
+    if (live && ledger?.follow && a.follow && a.follow !== ledger.follow) fail(`This ${a.mode} ledger follows ${ledger.follow}, not ${a.follow}.`);
     if (following && a.style) fail('--style does not apply when following the index: the index sets the rule.');
     if (following && a.force) fail('--force does not apply when following the index: the index decides when to trade.');
     if (!following && ledger && a.style && a.style !== ledger.style) {
@@ -116,8 +118,8 @@ export const runBot = async (a: BotRunOptions, out: (line: string) => void = () 
     }
     const style = following ? INDEXES[following].config.style : STYLES[a.style ?? ledger?.style ?? 'balanced'];
     const fresh = !ledger;
-    /** An existing sleeve switching from its own rule to copying the index. */
-    const converting = !!following && !!ledger && !ledger.follow;
+    /** An existing sleeve switching to copy this index (from its own rule, or on testnet from another index). */
+    const converting = !!following && !!ledger && ledger.follow !== following;
     if (!ledger) {
       const budget = a.budget ?? (dryRun ? 1000 : snapshotOnly ? maxBudget : NaN);
       if (!(budget > 0) && !snapshotOnly) fail(cli ? 'First run: choose the budget the bot may use, e.g. --budget 1000 (USDT).' : 'First run: enter the budget the bot may use (USDT).');
