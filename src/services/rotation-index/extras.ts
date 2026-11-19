@@ -66,6 +66,24 @@ export const loadIndexMatrix = (): Promise<PriceMatrix> =>
   );
 
 /**
+ * For replays: the index's price list, plus Binance's public daily prices for any stock
+ * token the sync has not saved yet (fetched for this check only, never saved).
+ */
+export const loadReplayMatrix = async (): Promise<{ matrix: PriceMatrix; fetched: string[] }> => {
+  const m = await loadIndexMatrix();
+  const missing = INDEX_EXTRAS.filter((x) => !m.prices[x.id]);
+  if (!missing.length) return { matrix: m, fetched: [] };
+  const today = new Date().toISOString().slice(0, 10);
+  const series = new Map<string, DailyPoint[]>();
+  for (const x of missing) {
+    const candles = await fetchDailyOpens(`${x.symbol}USDT`, '2025-01-01', today);
+    // The listing day's open is the very first trade, often far from the market price.
+    if (candles && candles.length > 1) series.set(x.symbol, candles.slice(1).map((c) => ({ date: c.date, value: c.open })));
+  }
+  return { matrix: mergeExtras(m, series), fetched: [...series.keys()] };
+};
+
+/**
  * Save the extras' daily prices (called by the price sync, before the index steps).
  * Fetches the last ~400 days each time, so a missed day fills itself in. The listing
  * day is skipped: its open is the very first trade, often far from the market price.

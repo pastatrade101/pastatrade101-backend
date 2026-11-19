@@ -6,6 +6,7 @@ import { runBot } from '../services/rotation-bot/runner';
 import { readBotSnapshots } from '../services/rotation-bot/snapshot';
 import type { BotMode } from '../services/rotation-bot/store';
 import { getRotationIndexView, isIndexId, stepRotationIndex, type IndexId } from '../services/rotation-index/rotationIndex.service';
+import { replayPeriods, replayRotationIndex } from '../services/rotation-index/replay';
 import { AppError, sendSuccess } from '../utils/api-response';
 import { asyncHandler } from '../utils/async-handler';
 
@@ -24,6 +25,24 @@ export const adminRotationIndex = asyncHandler(async (req: Request, res: Respons
 export const adminStepRotationIndex = asyncHandler(async (req: Request, res: Response) => {
   const r = await stepRotationIndex(indexId(req));
   return sendSuccess(res, r.added ? `Added ${r.added} day(s).` : 'Already up to date.', r);
+});
+
+// GET /api/v1/admin/rotation-index/replay/periods — the replay's limits and ready-made periods.
+export const adminReplayPeriods = asyncHandler(async (req: Request, res: Response) => {
+  return sendSuccess(res, 'Replay periods fetched.', await replayPeriods(indexId(req)));
+});
+
+// GET /api/v1/admin/rotation-index/replay?from=&to= — the index replayed over a period,
+// with and without the stock tokens. A check on saved prices: nothing is saved or traded.
+export const adminReplayIndex = asyncHandler(async (req: Request, res: Response) => {
+  const from = String(req.query.from ?? '');
+  const to = String(req.query.to ?? '');
+  try {
+    return sendSuccess(res, 'Replay done.', await replayRotationIndex(indexId(req), from, to));
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError(error instanceof Error ? error.message : 'The replay failed.', 400);
+  }
 });
 
 // GET /api/v1/admin/rotation-index/bot — the newest snapshot the rotation bot saved

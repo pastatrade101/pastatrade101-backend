@@ -98,17 +98,29 @@ export const stepRotationIndex = async (
     start = false,
     dryRun = false,
     from,
+    to,
     matrix
-  }: { start?: boolean; dryRun?: boolean; from?: string; /** Dry runs only: use these prices instead of the saved ones. */ matrix?: PriceMatrix } = {}
+  }: {
+    start?: boolean;
+    dryRun?: boolean;
+    from?: string;
+    /** Dry runs only: stop after this date. */
+    to?: string;
+    /** Dry runs only: use these prices instead of the saved ones. */
+    matrix?: PriceMatrix;
+  } = {}
 ): Promise<StepResult> => {
-  if (matrix && !dryRun) throw new Error('A price matrix can only be passed to a dry run.');
+  if ((matrix || to) && !dryRun) throw new Error('A price matrix or an end date can only be passed to a dry run.');
   if (from && !dryRun) throw new Error('--from replays the past and is only allowed with --dry-run.');
   const { config } = INDEXES[id];
   const style = config.style;
   const warnings: string[] = [];
   const m = matrix ?? (await loadIndexMatrix());
   const dates = m.dates;
-  const lastFinal = dates.length - 2;
+  const newestFinal = dates.length - 2;
+  let toIdx = -1;
+  if (to) for (let k = 0; k < dates.length && dates[k] <= to; k += 1) toIdx = k;
+  const lastFinal = to && toIdx >= 0 ? Math.min(toIdx, newestFinal) : newestFinal;
   if (lastFinal < style.lookbackDays) throw new Error('Not enough saved prices to rank coins yet.');
 
   let last: DayRow | null = null;

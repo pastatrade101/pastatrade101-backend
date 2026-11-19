@@ -8,6 +8,8 @@ import {
   adminBotLive,
   adminBotPreview,
   adminBotRun,
+  adminReplayIndex,
+  adminReplayPeriods,
   adminRotationBot,
   adminRotationIndex,
   adminStepRotationIndex
@@ -21,7 +23,9 @@ const router = Router();
 router.use(authenticate, adminOnly);
 
 router.get('/rotation-index', adminRotationIndex);
-// Before '/:id' so "bot" is not read as an index id.
+// Before '/:id' so "bot" and "replay" are not read as index ids.
+router.get('/rotation-index/replay/periods', adminReplayPeriods);
+router.get('/rotation-index/replay', adminReplayIndex);
 router.get('/rotation-index/bot', adminRotationBot);
 router.get('/rotation-index/bot/:mode/live', adminBotLive);
 router.post('/rotation-index/bot/:mode/preview', adminBotPreview);
