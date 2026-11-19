@@ -32,13 +32,15 @@ export const adminReplayPeriods = asyncHandler(async (req: Request, res: Respons
   return sendSuccess(res, 'Replay periods fetched.', await replayPeriods(indexId(req)));
 });
 
-// GET /api/v1/admin/rotation-index/replay?from=&to= — the index replayed over a period,
-// with and without the stock tokens. A check on saved prices: nothing is saved or traded.
+// GET /api/v1/admin/rotation-index/replay?from=&to=&btc_trend= — the index replayed over a
+// period, optionally next to the same rule with a BTC trend cash switch (btc_trend = the
+// average's length in days, 0 = off). A check on saved prices: nothing is saved or traded.
 export const adminReplayIndex = asyncHandler(async (req: Request, res: Response) => {
   const from = String(req.query.from ?? '');
   const to = String(req.query.to ?? '');
+  const btcTrend = Number(req.query.btc_trend ?? 0);
   try {
-    return sendSuccess(res, 'Replay done.', await replayRotationIndex(indexId(req), from, to));
+    return sendSuccess(res, 'Replay done.', await replayRotationIndex(indexId(req), from, to, Number.isFinite(btcTrend) ? btcTrend : -1));
   } catch (error) {
     if (error instanceof AppError) throw error;
     throw new AppError(error instanceof Error ? error.message : 'The replay failed.', 400);

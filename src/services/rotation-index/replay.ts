@@ -62,12 +62,24 @@ const findPeriods = async (id: IndexId) => {
   return { min_from: minFrom, max_to: maxTo, periods };
 };
 
-/** One replay of the period. Cached 10 min per period. */
-export const replayRotationIndex = (id: IndexId, from: string, to: string) =>
+/** Average lengths the BTC trend switch accepts (0 = off). */
+export const BTC_TREND_MIN = 10;
+export const BTC_TREND_MAX = 400;
+
+/**
+ * One replay of the period, cached 10 min per period. With `btcTrendDays`, the same rule is
+ * also run with the BTC trend switch (cash on review days when BTC closes below its
+ * N-day average); BTC and the top 10 come from the plain run, so every line starts on
+ * the same day.
+ */
+export const replayRotationIndex = (id: IndexId, from: string, to: string, btcTrendDays = 0) =>
   cached(
-    `rotation:replay:${id}:${from}:${to}`,
+    `rotation:replay:${id}:${from}:${to}:${btcTrendDays}`,
     async () => {
       if (!isoDate.test(from) || !isoDate.test(to)) throw new Error('Dates must be YYYY-MM-DD.');
+      if (btcTrendDays && (!Number.isInteger(btcTrendDays) || btcTrendDays < BTC_TREND_MIN || btcTrendDays > BTC_TREND_MAX)) {
+        throw new Error(`The BTC average must be ${BTC_TREND_MIN} to ${BTC_TREND_MAX} days.`);
+      }
       const style = INDEXES[id].config.style;
       const m = await loadPriceMatrix();
       const { minFrom, maxTo } = bounds(m, style.lookbackDays);
@@ -75,10 +87,39 @@ export const replayRotationIndex = (id: IndexId, from: string, to: string) =>
       if (to > maxTo) throw new Error(`The latest end is ${maxTo}, the newest final day.`);
       if (to < shift(from, style.rebalanceDays + 1)) throw new Error(`Pick at least ${style.rebalanceDays + 1} days, so the period has a review and its fill.`);
 
-      const run = await stepRotationIndex(id, { dryRun: true, start: true, from, to, matrix: m });
+      const [run, switched] = await Promise.all([
+        stepRotationIndex(id, { dryRun: true, start: true, from, to, matrix: m }),
+        btcTrendDays ? stepRotationIndex(id, { dryRun: true, start: true, from, to, matrix: m, btcTrendDays }) : Promise.resolve(null)
+      ]);
       if (!run.rows?.length) throw new Error('Nothing to replay in that period.');
       const v = buildIndexView(id, run.rows, m);
       if (!v.started) throw new Error('Nothing to replay in that period.');
+
+      let btcSwitch = null;
+      let switchedNav = new Map<string, number>();
+      if (switched?.rows?.length) {
+        const rows = switched.rows;
+        const w = buildIndexView(id, rows, m);
+        switchedNav = new Map(rows.map((r) => [r.date, r2(r.nav)]));
+        // Stretches fully in cash, after the start day (every run starts the day in cash).
+        const cashRanges: { from: string; to: string }[] = [];
+        for (const r of rows.slice(1)) {
+          const inCash = r.state.cash / r.nav > 0.99;
+          const open = cashRanges[cashRanges.length - 1];
+          if (inCash && open && open.to === shift(r.date, -1)) open.to = r.date;
+          else if (inCash) cashRanges.push({ from: r.date, to: r.date });
+        }
+        btcSwitch = {
+          days: btcTrendDays,
+          latest: { return_pct: w.latest.return_pct, max_drawdown_pct: w.latest.max_drawdown_pct },
+          holdings: w.holdings,
+          // An empty ranking is the switch at work: BTC was below its average that day.
+          changes: w.reviews.filter((r) => r.adds.length || r.sells.length).map((r) => ({ ...r, btc_below: r.ranking.length === 0 })),
+          cash_days: cashRanges.reduce((n, c) => n + (Date.parse(c.to) - Date.parse(c.from)) / DAY + 1, 0),
+          measured_days: rows.length - 1,
+          cash_ranges: cashRanges
+        };
+      }
 
       return {
         from: v.start_date,
@@ -88,8 +129,9 @@ export const replayRotationIndex = (id: IndexId, from: string, to: string) =>
         latest: v.latest,
         holdings: v.holdings,
         changes: v.reviews.filter((r) => r.adds.length || r.sells.length),
-        series: v.series,
-        warnings: run.warnings
+        series: v.series.map((p) => ({ ...p, switched: switchedNav.get(p.date) ?? null })),
+        btc_switch: btcSwitch,
+        warnings: [...new Set([...run.warnings, ...(switched?.warnings ?? [])])]
       };
     },
     600
